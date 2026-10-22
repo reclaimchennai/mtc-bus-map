@@ -102,7 +102,8 @@ Serve `web/` with any static server. To rebuild for a new network snapshot: harv
 
 `mtc_routes.geojson` (route lines), `route_stops.json` (stops per working, keyed by route code),
 `timings.json` (first/last/frequency/hourly departures per working), `bus_stops.geojson`,
-`bus_termini.geojson`, `metro_lines.geojson`, `metro_stations.geojson`, `stop_dist.json`
+`bus_termini.geojson`, `metro_lines.geojson` (one shape per rail trip, read back by the GTFS
+build), `metro_map.geojson` (its distinct shapes, what the map draws), `metro_stations.geojson`, `stop_dist.json`
 (each stop's distance along its route), `seg_geo.json` (stop-to-stop road segments).
 Built from the Chennai One network snapshot of 17 October 2026.
 

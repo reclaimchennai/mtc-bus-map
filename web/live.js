@@ -1078,18 +1078,27 @@
   };
 
   /* ── search: live buses by fleet number, above the routes and stops ── */
+  // a fleet number or a route number, typed any way ("k 5660", "570s" finds P570S buses)
+  const key = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const bare = x => x.replace(/^[A-Z]+(?=\d)/, '');
+  // worked out once per bus per feed, not on every keystroke; kept only once the
+  // routes have loaded, since snOf() falls back to the raw code until then
+  const searchKeys = (reg, tr) => {
+    if (tr.sk) return tr.sk;
+    const sn = key(busSn(tr)), k = { r: key(reg), sn, bsn: bare(sn), wsn: key(snOf(tr.v[1])) };
+    if (CODE_FEAT) tr.sk = k;
+    return k;
+  };
   $('q').addEventListener('input', () => {
-    // a fleet number or a route number, typed any way ("k 5660", "570s" finds P570S buses)
-    const key = s => String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
     const v = key($('q').value);
     if (!on || v.length < 2 || !TRACK.size) return;
     // the route number typed exactly comes first, then the fleet number typed exactly;
     // a fleet number that merely contains the digits ("534" in DL1PD4534) comes last
     const score = (reg, tr) => {
-      const r = key(reg), sn = key(busSn(tr)), wsn = key(snOf(tr.v[1])), bare = x => x.replace(/^[A-Z]+(?=\d)/, '');
-      if (sn === v || bare(sn) === v || wsn === v) return 0;
+      const { r, sn, bsn, wsn } = searchKeys(reg, tr);
+      if (sn === v || bsn === v || wsn === v) return 0;
       if (r === v || r.endsWith(v) && v.length >= 4) return 1;
-      if (sn.startsWith(v) || bare(sn).startsWith(v) || wsn.startsWith(v)) return 2;
+      if (sn.startsWith(v) || bsn.startsWith(v) || wsn.startsWith(v)) return 2;
       return r.includes(v) ? 3 : -1;
     };
     const hits = [...TRACK.entries()].map(([r, tr]) => [score(r, tr), r]).filter(([s]) => s >= 0)
