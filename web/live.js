@@ -220,6 +220,7 @@
       } else if (old && old.shown) {
         tr.moving = old.moving;
       }
+      if (old) { tr.ox = old.ox || 0; tr.oy = old.oy || 0; }       // keep any easing-apart offset
       if (old && old.shown) {
         const dx = (old.shown[0] - v[3]) * K * Math.cos(v[2] * Math.PI / 180), dy = (old.shown[1] - v[2]) * K;
         if (Math.hypot(dx, dy) > 3 && Math.hypot(dx, dy) < 3000) tr.from = [old.shown[0], old.shown[1], t];
@@ -370,7 +371,7 @@
     const hourNow = new Date(Date.now() + 19800000).getUTCHours();
     const pulseT = CALM ? 0 : t * 2.4;
     ref = [mercX((b.getWest() + b.getEast()) / 2), mercY((b.getNorth() + b.getSouth()) / 2)];
-    const glows = [], buses = [], snows = [], zzs = [];
+    const glows = [], buses = [], snows = [], zzs = [], RAW = [];
     VIS = [];
     for (const [reg, tr] of TRACK) {
       const v = tr.v;
@@ -383,10 +384,14 @@
         glide(tr, t, P3); tr.shown = [P3[0], P3[1]];
         if (!fl0(v).includes('u')) tr.moving = t;
       } else posOf(tr, t, P3);
-      const lng = P3[0], lat = P3[1], h = P3[2];
-      if (reg !== selReg && (lng < W || lng > E || lat < S_ || lat > N)) continue;
+      const lng0 = P3[0], lat0 = P3[1], h = P3[2];
+      if (reg !== selReg && (lng0 < W || lng0 > E || lat0 < S_ || lat0 > N)) continue;
       if (tr.lastD != null && prevD != null && tr.lastD - prevD > 0.05) tr.moving = t; // moved since last update
-      const mx = mercX(lng) - ref[0], my = mercY(lat) - ref[1];
+      const rx = mercX(lng0) - ref[0], ry = mercY(lat0) - ref[1];
+      RAW.push([tr, rx, ry]);
+      // drawn where it is, nudged aside if it would sit on top of another bus (separate())
+      const mx = rx + (tr.ox || 0), my = ry + (tr.oy || 0);
+      const lng = lng0 + (tr.ox || 0) * 360, lat = lat0 - (tr.oy || 0) * 360 * Math.cos(lat0 * Math.PI / 180);
       const fl = v[6], lv = lvOf(fl), col = COLS[lv] || (COLS[lv] = hex(BUSART.L[lv].key));
       const isMoving = t - (tr.moving || 0) < 3, sel = reg === selReg;
       // a bus or a route is picked: everything else goes black and white
@@ -412,6 +417,7 @@
       if (snowZ && fl.includes('a')) snows.push([mx, my, -(AY * s + snowPx * 0.55), gray]);
       VIS.push([reg, lng, lat, Math.max(14, 12 * 9 * s * 0.45), gray]);
     }
+    separate(RAW, z, bw);
     nverts = 0;
     for (const [mx, my, r, c, a] of glows) quad(mx, my, r, r, UV.glow, -1000, c[0], c[1], c[2], a);
     // back to front: farther (higher on screen) first; the picked buses over the greyed ones
@@ -426,6 +432,37 @@
     glLayer.dirty = true;
     map.triggerRepaint();
     labels();
+  }
+
+  /* Buses that would be drawn on top of each other - bunched, or several routes at one
+     stop - ease apart instead: each pair closer than three quarters of a bus length is pushed
+     along the line between them, and the push settles in over a few frames (and
+     lets go the same way as they part). Street zooms only; their positions on the
+     road are untouched, only where the sprite is drawn. */
+  function separate(raw, z, bw) {
+    const EASE = 0.14;
+    if (z < 14.5) {
+      for (const [tr] of raw) if (tr.ox || tr.oy) { tr.ox *= 1 - EASE; tr.oy *= 1 - EASE; if (Math.abs(tr.ox) + Math.abs(tr.oy) < 1e-11) tr.ox = tr.oy = 0; }
+      return;
+    }
+    const minD = bw * 0.75 / (512 * Math.pow(2, z));
+    const cell = new Map();
+    raw.forEach((r, i) => { r[3] = 0; r[4] = 0; const k = Math.floor(r[1] / minD) + ',' + Math.floor(r[2] / minD); (cell.get(k) || cell.set(k, []).get(k)).push(i); });
+    for (let i = 0; i < raw.length; i++) {
+      const x = raw[i][1], y = raw[i][2], cx = Math.floor(x / minD), cy = Math.floor(y / minD);
+      for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (const j of cell.get((cx + a) + ',' + (cy + b)) || []) {
+        if (j <= i) continue;
+        let ex = raw[j][1] - x, ey = raw[j][2] - y, d = Math.hypot(ex, ey);
+        if (d >= minD) continue;
+        if (d < minD * 1e-3) { const ang = (i * 2.39996) % (2 * Math.PI); ex = Math.cos(ang); ey = Math.sin(ang); d = 0; } else { ex /= d; ey /= d; }
+        const push = (minD - d) / 2;
+        raw[i][3] -= ex * push; raw[i][4] -= ey * push; raw[j][3] += ex * push; raw[j][4] += ey * push;
+      }
+    }
+    for (const r of raw) {
+      const tr = r[0], tx = Math.max(-minD, Math.min(minD, r[3])), ty = Math.max(-minD, Math.min(minD, r[4]));
+      tr.ox = (tr.ox || 0) + (tx - (tr.ox || 0)) * EASE; tr.oy = (tr.oy || 0) + (ty - (tr.oy || 0)) * EASE;
+    }
   }
 
   /* Route numbers under the buses, street zooms only. Plain HTML labels moved with

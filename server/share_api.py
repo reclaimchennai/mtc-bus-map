@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Share links and social cards for the MTC map, like metro.reclaimchennai.city's.
 
-    share_api.py --data DIR --live DIR --db DIR --fonts DIR --cache DIR [--port 5064]
+    share_api.py --data DIR --live DIR --db DIR --fonts DIR --cache DIR [--port 5064] [--city chennai|delhi]
+
+One service per city (CITIES below: address, names, map extents, wording); the
+Delhi one sits behind maps.reclaimchennai.city/delhi, Caddy stripping /delhi.
 
 Short links (what the app's Share button hands out):
     /r/<route>[?w=<working>]   a route        -> /?route=<route>&w=<working>
@@ -32,7 +35,25 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from PIL import Image, ImageDraw, ImageFont
 
-ORIGIN = 'https://mtc.reclaimchennai.city'
+CITIES = {
+    'chennai': dict(origin='https://mtc.reclaimchennai.city', host='mtc.reclaimchennai.city', prefix='',
+                    name='Chennai MTC Buses', script='tamil', sub_route='மாநகரப் பேருந்து', sub_stop='பேருந்து நிறுத்தம்',
+                    sub_site='சென்னை மாநகரப் பேருந்து', on_map='the Chennai MTC map', bus_box=[80.1, 12.85, 80.32, 13.2],
+                    site_box=[80.02, 12.78, 80.32, 13.25], db_title='MTC, measured', db_sub='பேருந்துகள், அளவிடப்பட்டவை',
+                    db_desc="Chennai's buses from their own GPS: on the road, speed, bunching, crowding",
+                    route_more='Live buses, stops, timings and fares',
+                    kinds=(('Electric', 'e'), ('AC', 'a'), ('wheelchair accessible', 'l')), tags={}),
+    'delhi': dict(origin='https://maps.reclaimchennai.city/delhi', host='maps.reclaimchennai.city/delhi', prefix='/delhi',
+                  name='Delhi Buses', script='deva', sub_route='दिल्ली की बसें', sub_stop='बस स्टॉप',
+                  sub_site='दिल्ली की बसें', on_map='the Delhi bus map', bus_box=[76.95, 28.45, 77.40, 28.85],
+                  site_box=[76.88, 28.40, 77.42, 28.88], db_title='Delhi buses, measured', db_sub='दिल्ली की बसें, मापी गईं',
+                  db_desc="Delhi's buses from their own GPS: on the road, speed, bunching",
+                  route_more='Live buses, stops and timings',
+                  kinds=(('DEVI electric feeder', 'd'), ('Electric', 'e'), ('cluster bus', 'k'), ('AC', 'a'), ('wheelchair accessible', 'l')),
+                  tags={'DTC': (47, 154, 62), 'Cluster': (236, 122, 28), 'DEVI': (226, 86, 27)}),
+}
+CITY = CITIES['chennai']
+ORIGIN = CITY['origin']
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 W, H, S = 1200, 630, 2                        # card size, supersampling
 PAPER, INK, MUTED, RED = (249, 245, 237), (28, 28, 30), (110, 108, 104), (240, 27, 72)
@@ -65,9 +86,10 @@ def hash_color(name):
 
 
 def font(bold, size, tamil=False):
-    key = (bold, size, tamil)
+    script = CITY['script'] if tamil else ''                  # tamil=True: the city's own script
+    key = (bold, size, script)
     if key not in A['fonts']:
-        name = ('NotoSansTamil-' if tamil else 'NotoSans-') + ('Bold' if bold else 'Regular') + '.ttf'
+        name = {'tamil': 'NotoSansTamil-', 'deva': 'NotoSansDevanagari-'}.get(script, 'NotoSans-') + ('Bold' if bold else 'Regular') + '.ttf'
         A['fonts'][key] = ImageFont.truetype(os.path.join(A['fontdir'], name), size * S)
     return A['fonts'][key]
 
@@ -76,6 +98,7 @@ def load(a):
     A.update(dict(data=a.data, live=a.live, db=a.db, fontdir=a.fonts, cache=a.cache, fonts={}))
     A['idx'] = json.load(open(os.path.join(a.data, 'share_index.json')))
     A['mtime'] = os.path.getmtime(os.path.join(a.data, 'share_index.json'))
+    A['cat'] = {r[0]: r[8] for r in A['idx']['routes'].values() if len(r) > 8}     # route number -> category (tag colour)
     os.makedirs(a.cache, exist_ok=True)
 
 
@@ -171,7 +194,7 @@ def runs(d, x, y, parts, size):
 
 def footer(d, path):
     f1, f2 = font(False, 24), font(True, 24)
-    w1 = text(d, (56, H - 76), 'mtc.reclaimchennai.city', f2 if not path else f1, INK if not path else MUTED)
+    w1 = text(d, (56, H - 76), CITY['host'], f2 if not path else f1, INK if not path else MUTED)
     if path:
         text(d, (56 + w1, H - 76), path, f2, INK)
 
@@ -199,7 +222,8 @@ def card_route(sn, code=None):
     if not codes:
         return None
     code = code if code in codes else codes[0]
-    sn_, src, dst, nst, trips, first, last, coords = idx['routes'][code]
+    sn_, src, dst, nst, trips, first, last, coords = idx['routes'][code][:8]
+    tag = CITY['tags'].get(idx['routes'][code][8] if len(idx['routes'][code]) > 8 else '', TAG)
     img, d = base()
     m = Map(bbox_of(coords))
     water(d, m)
@@ -211,9 +235,9 @@ def card_route(sn, code=None):
     dot(d, m(*coords[-1]), 9, col, (255, 255, 255), 4)
     d.rectangle([0, 0, MAPX * S, H * S], fill=PAPER)
     logo(d, 56, 50)
-    text(d, (134, 62), 'Chennai MTC Buses', font(True, 26), INK)
-    text(d, (134, 96), 'மாநகரப் பேருந்து', font(False, 21, True), MUTED)
-    pill(d, 56, 150, sn, 44)
+    text(d, (134, 62), CITY['name'], font(True, 26), INK)
+    text(d, (134, 96), CITY['sub_route'], font(False, 21, True), MUTED)
+    pill(d, 56, 150, sn, 44, tag)
     y = 236
     for ln in wrap(d, f'{nice(src)} to {nice(dst)}', font(True, 40), 470, 3):
         text(d, (56, y), ln, font(True, 40)); y += 52
@@ -221,7 +245,7 @@ def card_route(sn, code=None):
     runs(d, 56, y, [(str(nst), True), (' stops · ', False), (str(trips), True), (' trips a day', False)], 28)
     if first and last:
         text(d, (56, y + 42), f'First bus {first} · last {last}', font(False, 24), MUTED)
-    text(d, (56, H - 120), 'Live buses, stops, timings and fares', font(False, 23), MUTED)
+    text(d, (56, H - 120), CITY['route_more'], font(False, 23), MUTED)
     footer(d, '/r/' + sn)
     return finish(img)
 
@@ -252,8 +276,8 @@ def card_stop(lat, lon):
     dot(d, m(lon, lat), 5, (255, 255, 255))
     d.rectangle([0, 0, MAPX * S, H * S], fill=PAPER)
     logo(d, 56, 50)
-    text(d, (134, 62), 'Chennai MTC Buses', font(True, 26), INK)
-    text(d, (134, 96), 'பேருந்து நிறுத்தம்', font(False, 21, True), MUTED)
+    text(d, (134, 62), CITY['name'], font(True, 26), INK)
+    text(d, (134, 96), CITY['sub_stop'], font(False, 21, True), MUTED)
     y = 160
     for ln in wrap(d, nice(name), font(True, 48), 470, 2):
         text(d, (56, y), ln, font(True, 48)); y += 62
@@ -269,7 +293,7 @@ def card_stop(lat, lon):
             if y > H - 190:
                 pill(d, x, y, f'+{len(rs) - rs.index(sn)} more', 22, (228, 222, 210), INK)
                 break
-        x += pill(d, x, y, sn, 22) + 8
+        x += pill(d, x, y, sn, 22, CITY['tags'].get(A['cat'].get(sn, ''), TAG)) + 8
     text(d, (56, H - 120), 'Live arrivals, the next bus and every route', font(False, 23), MUTED)
     footer(d, None)
     return finish(img)
@@ -291,8 +315,9 @@ def card_bus(reg):
     idx = A['idx']
     img, d = base()
     if v:
-        _, code, lat, lon, _b, fix, fl, eta = v
+        _, code, lat, lon, _b, fix, fl, eta = v[:8]
         r = idx['routes'].get(code)
+        tag = CITY['tags'].get(r[8] if r and len(r) > 8 else '', TAG)
         sn, dst, coords = (r[0], r[2], r[7]) if r else (code, '', [[lon, lat]])
         bb = bbox_of(coords + [[lon, lat]])
         m = Map(bb)
@@ -301,22 +326,22 @@ def card_bus(reg):
         dot(d, m(lon, lat), 16, RED, (255, 255, 255), 5)
         dot(d, m(lon, lat), 6, (255, 255, 255))
     else:
-        m = Map([80.1, 12.85, 80.32, 13.2]); water(d, m)
+        m = Map(CITY['bus_box']); water(d, m)
     d.rectangle([0, 0, MAPX * S, H * S], fill=PAPER)
     logo(d, 56, 50)
-    text(d, (134, 62), 'Chennai MTC Buses', font(True, 26), INK)
+    text(d, (134, 62), CITY['name'], font(True, 26), INK)
     d.ellipse([134 * S, 104 * S, 146 * S, 116 * S], fill=RED)
     text(d, (154, 96), 'LIVE', font(True, 21), RED)
     if not v:
         text(d, (56, 170), f'Bus {reg}', font(True, 52))
         text(d, (56, 248), 'Not reporting its position right now.', font(False, 26), MUTED)
     else:
-        pill(d, 56, 150, sn, 44)
+        pill(d, 56, 150, sn, 44, tag)
         y = 236
         for ln in wrap(d, f'to {nice(dst)}', font(True, 40), 470, 2):
             text(d, (56, y), ln, font(True, 40)); y += 52
         y += 10
-        kinds = [k for k, c in (('Electric', 'e'), ('AC', 'a'), ('wheelchair accessible', 'l')) if c in fl]
+        kinds = [k for k, c in CITY['kinds'] if c in fl and not (c == 'e' and 'd' in fl)]
         runs(d, 56, y, [(f'Bus {reg}', True), ((' · ' + ' · '.join(kinds)) if kinds else '', False)], 26)
         t = time.time()
         nxt = [(i, fix + dt_) for i, dt_ in zip(eta[0::2], eta[1::2]) if fix + dt_ > t] if j.get('fmt') == 2 else []
@@ -329,10 +354,11 @@ def card_bus(reg):
     return finish(img)
 
 
-def card_site(title='Chennai MTC Buses', sub='சென்னை மாநகரப் பேருந்து', stat=None, desc=None, path=None):
+def card_site(title=None, sub=None, stat=None, desc=None, path=None):
+    title, sub = title or CITY['name'], sub or CITY['sub_site']
     idx = A['idx']
     img, d = base()
-    m = Map([80.02, 12.78, 80.32, 13.25], pad=0.0)
+    m = Map(CITY['site_box'], pad=0.0)
     water(d, m)
     for code, r in idx['routes'].items():
         line(d, m, r[7], tuple(int(c * .7 + 255 * .3) for c in hash_color(r[0])), 2.2, casing=False)
@@ -358,8 +384,7 @@ def card_db():
         stat = [(f"{j['coverage']['buses']:,}", True), (' buses tracked · ', False), (f"{100 * b['total_bunched'] / max(1, b['total_pairs']):.1f}%", True), (' bunched', False)]
     except Exception:
         stat = None
-    return card_site('MTC, measured', 'பேருந்துகள், அளவிடப்பட்டவை', stat,
-                     "Chennai's buses from their own GPS: on the road, speed, bunching, crowding", '/db')
+    return card_site(CITY['db_title'], CITY['db_sub'], stat, CITY['db_desc'], '/db')
 
 
 # ── http ──
@@ -382,7 +407,7 @@ def page(title, desc, image, canonical, target):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="canonical" href="{e(canonical)}">
 <meta property="og:type" content="website">
-<meta property="og:site_name" content="Chennai MTC Buses">
+<meta property="og:site_name" content="{e(CITY['name'])}">
 <meta property="og:title" content="{e(title)}">
 <meta property="og:description" content="{e(desc)}">
 <meta property="og:url" content="{e(canonical)}">
@@ -446,29 +471,31 @@ class Hdl(BaseHTTPRequestHandler):
             sn = '/'.join(parts[1:])
             codes = idx['services'].get(sn)
             if not codes:
-                return self.reply(404, page('Route not found', '', f'{ORIGIN}/og/site.png', ORIGIN, '/'), 'text/html; charset=utf-8', 60)
+                return self.reply(404, page('Route not found', '', f'{ORIGIN}/og/site.png', ORIGIN, CITY['prefix'] + '/'), 'text/html; charset=utf-8', 60)
             code = q.get('w') if q.get('w') in codes else codes[0]
             r = idx['routes'][code]
             title = f'Route {sn} · {nice(r[1])} → {nice(r[2])}'
-            desc = f'{r[3]} stops · {r[4]} trips a day' + (f' · first bus {r[5]}, last {r[6]}' if r[5] else '') + ' — live buses, stops and timings on the Chennai MTC map.'
-            tgt = f'/?route={quote(sn)}&w={code}'
+            desc = f'{r[3]} stops · {r[4]} trips a day' + (f' · first bus {r[5]}, last {r[6]}' if r[5] else '') + ' — live buses, stops and timings on ' + CITY['on_map'] + '.'
+            tgt = f"{CITY['prefix']}/?route={quote(sn)}&w={code}"
             return self.reply(200, page(title, desc, f'{ORIGIN}/og/r/{quote(sn)}.png?w={code}&v={ver}', f'{ORIGIN}/r/{quote(sn)}?w={code}', tgt), 'text/html; charset=utf-8')
         if parts[0] == 's' and len(parts) >= 2:
             lat, lon = (float(x) for x in parts[1].split(','))
             s = nearest_stop(lat, lon)
             if not s:
-                return self.reply(404, page('Stop not found', '', f'{ORIGIN}/og/site.png', ORIGIN, '/'), 'text/html; charset=utf-8', 60)
+                return self.reply(404, page('Stop not found', '', f'{ORIGIN}/og/site.png', ORIGIN, CITY['prefix'] + '/'), 'text/html; charset=utf-8', 60)
             key = f'{s[1]:.5f},{s[0]:.5f}'
             title = f'{nice(s[2])} · bus stop'
-            desc = f'{len(s[3])} routes: ' + ', '.join(s[3][:12]) + ('…' if len(s[3]) > 12 else '') + ' — live arrivals on the Chennai MTC map.'
-            return self.reply(200, page(title, desc, f'{ORIGIN}/og/s/{key}.png?v={ver}', f'{ORIGIN}/s/{key}', f'/?stop={key}'), 'text/html; charset=utf-8')
+            desc = f'{len(s[3])} routes: ' + ', '.join(s[3][:12]) + ('…' if len(s[3]) > 12 else '') + ' — live arrivals on ' + CITY['on_map'] + '.'
+            return self.reply(200, page(title, desc, f'{ORIGIN}/og/s/{key}.png?v={ver}', f'{ORIGIN}/s/{key}', f"{CITY['prefix']}/?stop={key}"), 'text/html; charset=utf-8')
         if parts[0] == 'b' and len(parts) >= 2:
             reg = parts[1][:12]
             v, _ = live_bus(reg)
             r = idx['routes'].get(v[1]) if v else None
+            if v and len(v) > 8 and r:                  # alias-matched bus: its own route number
+                r = [v[8]] + list(r[1:])
             title = f'Bus {reg} · {r[0]} → {nice(r[2])}' if r else f'Bus {reg}'
-            desc = ('Follow it live on the Chennai MTC map.' if v else 'Not reporting right now — see every live bus on the Chennai MTC map.')
-            return self.reply(200, page(title, desc, f'{ORIGIN}/og/b/{quote(reg)}.png?t={int(time.time() // 120)}', f'{ORIGIN}/b/{quote(reg)}', f'/?bus={quote(reg)}'), 'text/html; charset=utf-8', 60)
+            desc = ('Follow it live on ' + CITY['on_map'] + '.' if v else 'Not reporting right now — see every live bus on ' + CITY['on_map'] + '.')
+            return self.reply(200, page(title, desc, f'{ORIGIN}/og/b/{quote(reg)}.png?t={int(time.time() // 120)}', f'{ORIGIN}/b/{quote(reg)}', f"{CITY['prefix']}/?bus={quote(reg)}"), 'text/html; charset=utf-8', 60)
         return self.reply(404, b'not found', 'text/plain', 60)
 
 
@@ -477,7 +504,10 @@ def main():
     for k in ('data', 'live', 'db', 'fonts', 'cache'):
         ap.add_argument('--' + k, required=True)
     ap.add_argument('--port', type=int, default=5064)
+    ap.add_argument('--city', default='chennai', choices=sorted(CITIES))
     a = ap.parse_args()
+    global CITY, ORIGIN
+    CITY = CITIES[a.city]; ORIGIN = CITY['origin']
     load(a)
 
     def reload_loop():                                       # pick up a refreshed share_index.json
