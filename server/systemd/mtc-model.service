@@ -1,0 +1,10 @@
+[Unit]
+Description=MTC travel model (time per metre per stop pair and hour, dwells) for the Chalo collector's nowcast ETAs
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/projects/mtc-live
+ExecStart=/usr/bin/python3 travel_model.py --stops %h/projects/maps-site/mapsv2/data/route_stops.json --stop-dist %h/projects/maps-site/mapsv2/data/stop_dist.json --archive %h/projects/mtc-live/archive --out %h/projects/maps-site/mapsv2/live/model.json --dwell-out %h/projects/maps-site/mapsv2/live/dwell.json --days 7 --max-gap 1800 --max-span 40
+Nice=15
+StandardOutput=append:%h/projects/mtc-live/logs/model.log
+StandardError=append:%h/projects/mtc-live/logs/model.log

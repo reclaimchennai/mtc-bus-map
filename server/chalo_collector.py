@@ -21,8 +21,14 @@ minutes. The User-Agent says who we are.
 
 Chalo's route ids are its own, so each bus is matched to one of our workings
 (same route number) by where it is along that working's stops and which way it
-is heading. Chalo gives no stop-by-stop predictions, so ETAs are estimated
-from the bus's distance along the route at city bus speed. AC and Express come
+is heading. Chalo gives no stop-by-stop predictions, so ETAs are our own: with
+--model (travel_model.py) each stop-to-stop segment runs at its learned time
+per metre for the hour (standing included), or at what buses of the fleet were
+just seen doing on it (live probes, nowcast.py); without it, at city bus speed
+plus a fixed dwell. A bus is seen only every ~13 min (route-by-route polling),
+so probes come from fix pairs up to PROBE_GAP apart, and the per-bus pace used
+for Delhi is left out: backtests (backtest.py, 23-24 Oct 2026) found it no help
+at this fix rate. AC and Express come
 from Chalo's route features, Premium from its P-prefixed route names (P570S); electric from the flags we archived per
 registration from Chennai One. Output and archive are the same as
 live_collector.py's, so the map, Traffic layer and dashboard carry on.
@@ -44,12 +50,14 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from live_collector import Collector, IST, log  # noqa: E402
+import nowcast  # noqa: E402
 
 BASE = 'https://production.zophop.com'
 UA = 'MTCMap/1.0 (+https://mtc.reclaimchennai.city; civic transit map)'
 SPEED = 4.4          # m/s (~16 km/h, the observed city median) for estimated ETAs
 DWELL = 12           # s per stop
 HOT_EVERY = 30       # s between polls of a route a rider has open on the map
+PROBE_GAP = 1800     # s: longest gap between two fixes of a bus still read as one drive
 HOT_MAX = 16         # route variants watched at once: at most HOT_MAX / HOT_EVERY extra requests a second
 
 
@@ -78,6 +86,10 @@ class ChaloCollector(Collector):
         self.variants = {v['route_id']: v for v in json.load(open(a.routes))}
         self.fleet = self.load_fleet(a.archive)
         self.pause_until = 0
+        self.stop_ids = {c: [s[0] for s in r['d'][0]['s']] for c, r in rs.items()}
+        self.model = nowcast.Model(a.model) if a.model else None
+        self.mlock = threading.Lock()   # poll() runs in several threads
+        self.track = {}                 # reg -> (code, fix time, metres along, segment index)
         log(f'{len(self.variants)} Chalo variants, {len(self.fleet)} buses with known flags')
 
     @staticmethod
@@ -146,7 +158,28 @@ class ChaloCollector(Collector):
                     best = (score, code, i + 1, ds[i] + t * (ds[i + 1] - ds[i]))
         return best[1:] if best and best[0] < 400 else None
 
+    def learn(self, reg, code, k, d, fix):
+        """Every segment a bus drove (or stood on) since its last fix is a live probe
+        for the buses behind it."""
+        tk = self.track.get(reg)
+        ids, ds = self.stop_ids[code], self.sdist[code]
+        if tk and tk[0] == code and 0 < fix - tk[1] <= PROBE_GAP:
+            gap, moved = fix - tk[1], d - tk[2]
+            if moved >= 12 and moved / gap <= 25:
+                for j in range(tk[3], k):
+                    if j + 1 < len(ids):
+                        share = max(0.0, min(d, ds[j + 1]) - max(tk[2], ds[j])) / moved
+                        if share > 0:
+                            self.model.add_probe(f'{ids[j]}|{ids[j + 1]}', fix, moved / gap, gap * share)
+            elif abs(moved) < 12 and k < len(ids):
+                self.model.add_probe(f'{ids[k - 1]}|{ids[k]}', fix, 0.0, gap)       # standing counts too
+        if not tk or fix > tk[1]:
+            self.track[reg] = (code, fix, d, k - 1)
+
     def poll(self, vid):
+        if self.model is not None:
+            with self.mlock:
+                self.model.reload()
         v = self.variants[vid]
         c, j = get(f'/vasudha/route/chennai/{vid}')
         if c == 429 or c >= 500:
@@ -174,7 +207,12 @@ class ChaloCollector(Collector):
             fix = int((b.get('tS') or time.time() * 1000) / 1000)
             m = self.match(v['route_name'], lat, lon, b.get('bearing'), b.get('_isHalted'))
             known = self.fleet.get(reg, '')
-            if m:
+            if m and self.model is not None:
+                code, k, d = m
+                with self.mlock:
+                    self.learn(reg, code, k, d, fix)
+                    eta = [[i, round(t_)] for i, t_ in self.model.eta(self.stop_ids[code], self.sdist[code], d, k, fix)]
+            elif m:
                 code, k, d = m
                 ds = self.sdist[code]
                 eta = [[i, fix + (ds[i] - d) / SPEED + DWELL * (i - k)] for i in range(k, min(len(ds), k + 25))]
@@ -233,6 +271,7 @@ def main():
     ap.add_argument('--rate', type=float, default=1.5)
     ap.add_argument('--workers', type=int, default=2)
     ap.add_argument('--write', type=float, default=10)
+    ap.add_argument('--model', default='', help='model.json from travel_model.py: learned segment times (nowcast ETAs)')
     ap.add_argument('--watch', default='', help='watch.json from report_api.py: routes riders have open')
     a = ap.parse_args()
     if a.archive:

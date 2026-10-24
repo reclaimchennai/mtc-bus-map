@@ -40,6 +40,10 @@ server/    runs on the web host
                            writes live/vehicles.json every 20 s, archives every GPS fix and the
                            road speed between fixes (chalo_routes.json: Chalo's route list)
   live_collector.py        the same from Chennai One (used until 20 Oct 2026; needs a session)
+  travel_model.py          learned time per metre per stop pair and hour -> live/model.json,
+                           live/dwell.json (every 3 h); the collector's ETAs (--model)
+  nowcast.py               ETAs from that model plus live probes from the rest of the fleet
+  backtest.py              train on one day, predict positions 30 s-20 min ahead on the next
   live_speeds.py           per-segment speed medians -> live/speeds.json (every 10 min)
   daily_harvest.py         new network snapshots + the day's bus roster (05:30 IST)
   db_build.py              dashboard data: fleet, speeds, bunching, crowding, roster
@@ -67,7 +71,9 @@ everyone from its output.
 cd server
 python3 chalo_collector.py --stops ../web/data/route_stops.json --timings ../web/data/timings.json \
   --stop-dist ../web/data/stop_dist.json --routes chalo_routes.json --archive archive \
-  --out ../web/live/vehicles.json --rate 2
+  --out ../web/live/vehicles.json --rate 2 --model ../web/live/model.json
+python3 travel_model.py --stops ../web/data/route_stops.json --stop-dist ../web/data/stop_dist.json \
+  --archive archive --out ../web/live/model.json --days 7 --max-gap 1800 --max-span 40
 python3 live_speeds.py --stops ../web/data/route_stops.json --archive archive --out ../web/live/speeds.json
 ```
 
@@ -83,9 +89,28 @@ Serve `web/` with any static server. To rebuild for a new network snapshot: harv
   about 24 minutes, so a bus's GPS fix can be several minutes old.
 - **Matching and ETAs are ours.** The feed's route ids are its own, so each bus is matched to one
   of our workings by route number, position along the working's stops and heading. The feed has
-  no stop-by-stop predictions: arrival times are estimated from the bus's distance along the
-  route at 4.4 m/s plus 12 s a stop. Fleet suffixes carry the bus type: `E` electric, then `LF`
+  no stop-by-stop predictions, so arrival times are our nowcast: each stop-to-stop segment
+  runs at its learned time per metre for the hour (all seconds buses spent on it over all
+  metres covered, standing included, from the last 7 days of the archive), or at what other
+  buses were just seen doing on it (live probes, last 15 min). Averaging time per metre, not
+  speeds, matters: a median running speed plus a separate dwell overshoots, because most dwells
+  are shorter than the gap between fixes and never seen. Fleet suffixes carry the bus type: `E` electric, then `LF`
   low floor (`K5008ELF` is bus K5008).
+- **Nowcast backtest** (`server/backtest.py`; model from 21–23 Oct, tested on 24 Oct 2026, 30 %
+  of buses, median / p80 metres along the route between predicted and next observed fix):
+
+  | ahead | raw GPS | 4.4 m/s + 12 s | nowcast |
+  |---|---|---|---|
+  | 30 s | 138 / 278 | 86 / 154 | 74 / 149 |
+  | 1 min | 297 / 500 | 147 / 265 | 119 / 233 |
+  | 2 min | 629 / 959 | 257 / 490 | 164 / 360 |
+  | 5 min | 1503 / 2236 | 518 / 1026 | 304 / 687 |
+  | 10 min | 3160 / 4529 | 923 / 2077 | 425 / 994 |
+  | 20 min | 6081 / 8703 | 1583 / 3644 | 663 / 1474 |
+
+  A bus is seen only every ~13 minutes (median), so probes come from fix pairs up to 30 min
+  apart. The per-bus pace correction used for Delhi (seen every ~20 s) made no difference here
+  and is left out.
 - **Observed speed** is distance along the bus's own route between two consecutive GPS fixes,
   divided by the time between them — stops, signals and congestion included, i.e. the speed a
   rider gets. Each sample is credited to every stop-to-stop segment it spans and pooled across all

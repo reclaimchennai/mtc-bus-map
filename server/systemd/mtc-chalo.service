@@ -7,7 +7,7 @@ Conflicts=mtc-live.service
 [Service]
 Type=simple
 WorkingDirectory=%h/projects/mtc-live
-ExecStart=/usr/bin/python3 chalo_collector.py --stops %h/projects/maps-site/mapsv2/data/route_stops.json --timings %h/projects/maps-site/mapsv2/data/timings.json --stop-dist %h/projects/maps-site/mapsv2/data/stop_dist.json --routes %h/projects/mtc-live/chalo_routes.json --archive %h/projects/mtc-live/archive --out %h/projects/maps-site/mapsv2/live/vehicles.json --rate 2 --workers 2 --watch %h/projects/mtc-live/reports/watch.json
+ExecStart=/usr/bin/python3 chalo_collector.py --stops %h/projects/maps-site/mapsv2/data/route_stops.json --timings %h/projects/maps-site/mapsv2/data/timings.json --stop-dist %h/projects/maps-site/mapsv2/data/stop_dist.json --routes %h/projects/mtc-live/chalo_routes.json --archive %h/projects/mtc-live/archive --out %h/projects/maps-site/mapsv2/live/vehicles.json --rate 2 --workers 2 --watch %h/projects/mtc-live/reports/watch.json --model %h/projects/maps-site/mapsv2/live/model.json
 Restart=always
 RestartSec=60
 Nice=5
