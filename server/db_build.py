@@ -18,6 +18,9 @@ bunching    every route poll returns all of a working's buses at once. Ordered
 crowding    when the city travels (CMRL ticket entries by hour) against buses on
             the road by hour (observed) — a relative index, not a passenger count
 roster      the day's scheduled trips with the bus rostered to each
+
+Then bus_build.py writes SITE/db/bus/ — every bus over time, for the page's
+"Single bus" view, from the whole archive (closed days cached in --bus-cache).
 """
 import argparse
 import collections
@@ -30,7 +33,11 @@ import math
 import os
 import sqlite3
 import statistics
+import sys
 import time
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import bus_build  # noqa: E402
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 BUNCH_M, NEAR_M, END_M, MIN_HEADWAY = 250, 500, 400, 6
@@ -85,6 +92,7 @@ def main():
     ap.add_argument('--roster', default='')
     ap.add_argument('--cmrl', default='')
     ap.add_argument('--days', type=int, default=7)
+    ap.add_argument('--bus-cache', default='', help='default: busdays/ next to the archive')
     a = ap.parse_args()
     t0 = time.time()
     D = a.site + '/data/'
@@ -252,6 +260,10 @@ def main():
     os.replace(tmp, a.site + '/db/data.json')
     print(f'{nfix} fixes, {nspeed} speed samples, {sum(bunch_h)}/{sum(pairs_h)} pairs bunched, '
           f'{len(days_seen)} days, {time.time() - t0:.0f}s')
+    try:
+        bus_build.build(a.site, a.archive, a.bus_cache or os.path.join(os.path.dirname(os.path.abspath(a.archive)), 'busdays'))
+    except Exception as e:                                            # the dashboard above is already written
+        print(f'bus_build failed: {e!r}')
 
 
 if __name__ == '__main__':

@@ -69,6 +69,13 @@
   .tabs button.on { background: var(--raised); color: var(--ink); box-shadow: 0 1px 3px rgba(0,0,0,.12); }
   .note { background: var(--sunken); border-radius: 12px; padding: 12px 14px; font-size: 13px; color: var(--soft); line-height: 1.5; }
   .tip { position: fixed; pointer-events: none; background: var(--ink); color: var(--paper); font-size: 12px; padding: 6px 9px; border-radius: 8px; z-index: 10; display: none; font-variant-numeric: tabular-nums; }
+  .busq { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; }
+  .busq input { font: inherit; font-size: 16px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 9px 12px; border-radius: 10px; border: 1px solid var(--hair); background: var(--raised); color: var(--ink); width: 170px; }
+  .busq button { font: inherit; font-size: 14px; font-weight: 700; border: 0; border-radius: 10px; padding: 10px 16px; background: var(--red); color: #fff; cursor: pointer; }
+  .busq .hint { font-size: 12.5px; color: var(--faint); }
+  .busq .hint a { cursor: pointer; font-weight: 600; }
+  #bus-out[hidden] { display: none; }
+  .part { color: var(--faint); font-style: italic; }
   footer { margin-top: 40px; color: var(--faint); font-size: 12.5px; line-height: 1.55; }
   @media (max-width: 560px) { body { padding: 0 12px 48px; } .kpi b { font-size: 22px; } #map { height: 340px; } }
 </style>
@@ -145,6 +152,31 @@
       <div class="card"><div id="roster-kpis" class="kpis" style="margin:0"></div><svg class="chart" id="c-tier" style="margin-top:14px"></svg></div>
       <div class="card"><div class="legend"><span><i style="background:var(--ink)"></i>Buses by trips they run today</span></div><svg class="chart" id="c-tpb"></svg></div>
     </div>
+  </section>
+
+  <section id="single-bus">
+    <h2>Single bus</h2>
+    <p class="sub">Any one bus over the days we have archived: where it ran, how far and for how long, from its own GPS fixes. These are <b>observed GPS kilometres for buses that reported</b> — not MTC's planned, scheduled or ticketed kilometres, which are not published. A bus is seen every 10–15 minutes, gaps over 40 minutes count nothing, and buses that stop reporting vanish, so a day's figure is a floor. The archive starts on the evening of 19 Oct 2026.</p>
+    <div class="grid2">
+      <div class="card"><div class="legend"><span><i style="background:var(--ink)"></i>Buses reporting GPS, by day</span></div><svg class="chart" id="c-fl-buses"></svg></div>
+      <div class="card"><div class="legend"><span><i style="background:var(--red)"></i>Observed km per bus-day (median)</span><span><i style="background:var(--amber)"></i>Share of bus-days over 200 km</span></div><svg class="chart" id="c-fl-km"></svg></div>
+    </div>
+    <div class="cap" id="cap-fl"></div>
+    <div class="card" style="margin-top:12px">
+      <form class="busq" id="busq"><input id="bus-reg" list="bus-list" placeholder="K0677" autocomplete="off" spellcheck="false" aria-label="Bus registration"><datalist id="bus-list"></datalist><button>Show bus</button><span class="hint" id="bus-hint"></span></form>
+      <div id="bus-out" hidden>
+        <div class="kpis" id="bus-kpis" style="margin-top:4px"></div>
+        <div class="legend" style="margin-top:12px"><span><i style="background:var(--red)"></i>Observed km per day</span><span>label: the route it ran most that day</span></div>
+        <svg class="chart" id="c-bus-days"></svg>
+        <div class="grid2" style="margin-top:12px">
+          <div class="scroll"><table id="t-bus-routes"></table></div>
+          <div class="scroll"><table id="t-bus-work"></table></div>
+        </div>
+        <div class="scroll" style="margin-top:12px"><table id="t-bus-log"></table></div>
+        <div class="cap" id="cap-bus"></div>
+      </div>
+    </div>
+    <div class="note" style="margin-top:12px" id="bus-method"></div>
   </section>
 
   <section>
@@ -319,6 +351,89 @@ fetch('data.json?t=' + Math.floor(Date.now() / 600000)).then(r => r.json()).then
     }));
   });
 }).catch(e => { $('stamp').textContent = 'Could not load the data.'; console.error(e); });
+
+/* ── single bus ── */
+const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const dlab = d => +d.slice(8) + ' ' + MON[+d.slice(5, 7) - 1];
+const TYPE = { a: 'AC', e: 'Electric', l: 'Low floor', x: 'Express', p: 'Premium' };
+const ftype = f => f ? [...f].map(c => TYPE[c]).filter(Boolean).join(' · ') : 'Ordinary';
+let BI = null, partial = new Set();
+function dayBars(svg, rows, { h = 230, W = 720 } = {}) {
+  const m = { l: 34, r: 8, t: 18, b: 22 }, n = rows.length, bw = (W - m.l - m.r) / Math.max(n, 1);
+  svg.setAttribute('viewBox', `0 0 ${W} ${h}`); svg.innerHTML = '';
+  const top = Math.max(50, ...rows.map(r => r.km || 0)) * 1.12, y = v => m.t + (h - m.t - m.b) * (1 - v / top);
+  for (let k = 0; k <= 4; k++) { const v = top * k / 4; svg.append(S('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: 'grid-line' })); svg.append(S('text', { x: m.l - 6, y: y(v) + 3.5, 'text-anchor': 'end' }, Math.round(v))); }
+  rows.forEach((r, i) => {
+    const x = m.l + i * bw + bw * .14, w = bw * .72;
+    if (!r.log) { svg.append(S('rect', { x, y: h - m.b - 3, width: w, height: 3, fill: css('--hair') })); }
+    else {
+      const L = r.log, rect = S('rect', { x, y: y(L[1]), width: w, height: Math.max(0, h - m.b - y(L[1])), rx: 3, fill: css('--red'), opacity: partial.has(r.d) ? .45 : 1 });
+      hover(rect, `${dlab(r.d)}${partial.has(r.d) ? ' (partial day)' : ''} · <b>${L[1]} km</b> in ${L[2].toFixed(1)} h<br>routes: ${L[4].map(esc).join(', ') || '—'}`);
+      svg.append(rect);
+      if (L[4][0] && bw > 26) svg.append(S('text', { x: x + w / 2, y: y(L[1]) - 4, 'text-anchor': 'middle', class: 'lbl' }, L[4][0]));
+    }
+    if (n <= 16 || i % Math.ceil(n / 12) === 0) svg.append(S('text', { x: x + w / 2, y: h - 6, 'text-anchor': 'middle' }, dlab(r.d)));
+  });
+}
+function showBus(reg) {
+  const q = (reg || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!q) return;
+  $('bus-reg').value = q;
+  if (BI && !BI.has(q)) { $('bus-hint').textContent = `${q} has not been seen in the archive.`; $('bus-out').hidden = true; return; }
+  $('bus-hint').textContent = 'loading…';
+  fetch(`bus/${q}.json?t=${Math.floor(Date.now() / 600000)}`).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(b => {
+    $('bus-hint').textContent = '';
+    history.replaceState(null, '', '#bus=' + q);
+    const full = b.log.filter(l => !partial.has(l[0])), kmd = full.length ? full.reduce((a, l) => a + l[1], 0) / full.length : null, hd = full.length ? full.reduce((a, l) => a + l[2], 0) / full.length : null;
+    const over = full.filter(l => l[1] > 200).length;
+    $('bus-kpis').innerHTML = [[esc(b.reg), ftype(b.type)], [`${b.days} <span style="font-size:15px;font-weight:600;color:var(--soft)">/ ${BI.days.length - BI.days.indexOf(b.first)}</span>`, `days seen of those since first seen · ${dlab(b.first)} – ${dlab(b.last)}`],
+      [fmt(b.km), 'observed km, all days'], [kmd == null ? '—' : fmt(kmd), `observed km per full day${over ? ` · ${over} over 200` : ''}`],
+      [hd == null ? '—' : hd.toFixed(1) + ' h', 'in service per full day'], [b.routes.length, `route${b.routes.length === 1 ? '' : 's'} run`],
+      [b.home ? `<span style="font-size:17px;line-height:1.15;display:block">${esc(b.home[0])}</span>` : '—', b.home ? `likely base: ${b.home[1]} of ${b.home[2]} day starts and ends seen nearby` : 'likely base: no terminus nearby']]
+      .map(([v, s]) => `<div class="kpi"><b>${v}</b><span>${s}</span></div>`).join('');
+    const byDay = new Map(b.log.map(l => [l[0], l]));
+    const from = BI.days.indexOf(b.first);
+    dayBars($('c-bus-days'), BI.days.slice(Math.max(0, from)).map(d => ({ d, km: (byDay.get(d) || [])[1], log: byDay.get(d) })));
+    $('t-bus-routes').innerHTML = '<tr><th>Route</th><th class="n">Days</th><th class="n">Runs</th></tr>'
+      + b.routes.slice(0, 10).map(r => `<tr><td><span class="tag">${esc(r[0])}</span></td><td class="n"><b>${r[1]}</b></td><td class="n">${r[2]}</td></tr>`).join('');
+    $('t-bus-work').innerHTML = '<tr><th>Working</th><th class="n">Runs</th></tr>'
+      + b.workings.slice(0, 10).map(w => `<tr><td><span class="tag">${esc(w[1])}</span>${esc(w[2]) || '<span style="color:var(--faint)">route not matched to a working</span>'}</td><td class="n">${w[3]}</td></tr>`).join('');
+    $('t-bus-log').innerHTML = '<tr><th>Day</th><th class="n">km</th><th class="n">Hours</th><th>Seen</th><th>Routes</th><th>Started near</th><th>Ended near</th><th class="n">Fixes</th></tr>'
+      + b.log.slice().reverse().slice(0, 14).map(l => `<tr${partial.has(l[0]) ? ' class="part"' : ''}><td>${dlab(l[0])}${partial.has(l[0]) ? ' (partial)' : ''}</td><td class="n"><b>${l[1]}</b></td><td class="n">${l[2].toFixed(1)}</td><td>${l[5]}–${l[6]}</td><td>${l[4].slice(0, 4).map(r => `<span class="tag">${esc(r)}</span>`).join('')}</td><td>${esc(l[7]) || '—'}</td><td>${esc(l[8]) || '—'}</td><td class="n">${l[3]}${l[9] < 80 ? `<br><span style="color:var(--faint)">${l[9]}% placed</span>` : ''}</td></tr>`).join('');
+    $('cap-bus').textContent = `Runs: stretches of consecutive fixes on one working — a trip, or the part of it we saw. Hours: time between fixes no more than ${BI.rule.gap_s / 60} minutes apart. "Placed": fixes we could put on one of our workings; km is only counted for those. Partial days (the archive's first evening, and today so far) are left out of the per-day averages.`;
+    $('bus-out').hidden = false;
+  }).catch(() => { $('bus-hint').textContent = `Could not load ${q}.`; $('bus-out').hidden = true; });
+}
+fetch('bus/index.json?t=' + Math.floor(Date.now() / 600000)).then(r => r.json()).then(I => {
+  const today = I.generated.slice(0, 10);
+  partial = new Set([I.days[0], today]);
+  BI = new Set(I.buses.map(b => b[0])); BI.days = I.days; BI.rule = I.rule;
+  $('bus-list').innerHTML = I.buses.map(b => `<option value="${esc(b[0])}">${b[1]} days · ${fmt(b[2])} km${b[5] ? ' · ' + esc(b[5]) : ''}</option>`).join('');
+  const Fl = I.fleet, lab = Fl.map(f => dlab(f.d) + (partial.has(f.d) ? '*' : ''));
+  plainBars($('c-fl-buses'), lab, Fl.map(f => f.buses), { W: 420, h: 220, fmtv: v => fmt(v) + ' buses', labelEvery: Math.ceil(Fl.length / 8), color: Fl.map(f => partial.has(f.d) ? css('--faint') : css('--ink')) });
+  plainBars($('c-fl-km'), lab, Fl.map(f => f.km_med), { W: 420, h: 220, fmtv: v => v + ' km median', labelEvery: Math.ceil(Fl.length / 8), color: Fl.map(f => partial.has(f.d) ? css('--faint') : css('--red')) });
+  (() => {   // share over 200 km as a line on its own 0–20% scale
+    const svg = $('c-fl-km'), W = 420, h = 220, m = { l: 34, r: 8, t: 14, b: 22 }, n = Fl.length, bw = (W - m.l - m.r) / n, top = 20;
+    const x = i => m.l + i * bw + bw / 2, y = v => m.t + (h - m.t - m.b) * (1 - Math.min(v, top) / top);
+    const sh = Fl.map(f => f.moving ? 100 * f.over200 / f.moving : null);
+    let d = '', pen = false;
+    sh.forEach((v, i) => { if (v == null || partial.has(Fl[i].d)) { pen = false; return; } d += `${pen ? 'L' : 'M'}${x(i)} ${y(v)}`; pen = true; });
+    svg.append(S('path', { d, fill: 'none', stroke: css('--amber'), 'stroke-width': 2.5 }));
+    sh.forEach((v, i) => { if (v == null || partial.has(Fl[i].d)) return; const c = S('circle', { cx: x(i), cy: y(v), r: 4, fill: css('--amber') }); hover(c, `${dlab(Fl[i].d)} · <b>${v.toFixed(1)}%</b> of buses over 200 km (${Fl[i].over200} of ${fmt(Fl[i].moving)})`); svg.append(c); });
+    svg.append(S('text', { x: W - m.r, y: m.t - 4, 'text-anchor': 'end', fill: css('--amber') }, 'amber: % over 200 km, 0–20% scale'));
+  })();
+  const full = Fl.filter(f => !partial.has(f.d)), avg = k => full.reduce((a, f) => a + f[k], 0) / Math.max(1, full.length);
+  const sh200 = 100 * full.reduce((a, f) => a + f.over200, 0) / Math.max(1, full.reduce((a, f) => a + f.moving, 0));
+  $('cap-fl').innerHTML = `Over ${full.length} full days: <b>${fmt(avg('buses'))}</b> buses reported on an average day, <b>${fmt(avg('moving'))}</b> of them with observed movement along a route; the median bus covered <b>${Math.round(avg('km_med'))} km</b> we could see, and <b>${sh200.toFixed(1)}%</b> of bus-days went over 200 km. * partial day: the archive's first evening, and today so far. 20 Oct was read from Chennai One, which reported each bus more often, so more of its kilometres were seen.`;
+  $('bus-method').innerHTML = `<b>How a bus's day is measured.</b> Kilometres are the distance along the bus's own route between two consecutive GPS fixes of it — not a straight line — counted when both fixes are on the same working, no more than ${I.rule.gap_s / 60} minutes apart, at most ${I.rule.max_kmh} km/h, and the bus moved at least ${I.rule.min_step_m} m (less is GPS jitter at a stand). At a turnaround onto the same route number, the end of one trip and the start of the next are counted when that fits the time. Fixes the feed gave under a route we could not match add time but no distance. The likely base is the bus terminus (within ${(I.rule.near_m / 1000).toFixed(1)} km) where its day most often starts and ends: depot locations are not published and nothing is polled between 00:30 and 04:30, so treat it as a guess. Planned kilometres, duties, breakdowns and cancellations are operator data we do not have.`;
+  const h = location.hash.match(/bus=([A-Za-z0-9]+)/);
+  // no bus asked for: one seen every day with a middling distance
+  const most = Math.max(...I.buses.map(b => b[1])), pool = I.buses.filter(b => b[1] === most).sort((a, b) => a[2] - b[2]);
+  showBus(h ? h[1] : pool[Math.floor(pool.length * .6)][0]);
+}).catch(e => { $('bus-hint').textContent = 'Could not load the bus archive.'; console.error(e); });
+$('busq').addEventListener('submit', e => { e.preventDefault(); showBus($('bus-reg').value); });
+$('bus-reg').addEventListener('input', e => { const q = e.target.value.toUpperCase(); if (BI && BI.has(q) && e.inputType !== 'insertText') showBus(q); });   // picked from the list
 </script>
 </body>
 </html>
