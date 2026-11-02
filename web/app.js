@@ -223,7 +223,7 @@ function loadData() {
     });
     map.getSource('routes').setData(fc);
   });
-  fetch(`${DATA}/metro_lines.geojson`).then(r => r.json()).then(fc => map.getSource('metro').setData(fc));
+  fetch(`${DATA}/metro_map.geojson`).then(r => r.json()).then(fc => map.getSource('metro').setData(fc));
   fetch(`${DATA}/bus_termini.geojson?v=${DATA_V}`).then(r => r.json()).then(fc => {
     TERMINI_FC = fc;                          // lazy viewport-based pin rendering
     map.on('moveend', renderTermini);

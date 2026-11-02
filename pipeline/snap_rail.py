@@ -312,6 +312,10 @@ def main() -> int:
     with open(tmp, 'w') as fh:
         json.dump({'type': 'FeatureCollection', 'features': feats}, fh, separators=(',', ':'))
     os.replace(tmp, a.out)
+    # the map draws only the distinct track shapes; metro_lines stays per trip for GTFS
+    from build_metro_map import slim
+    slim_out = os.path.join(os.path.dirname(a.out), 'metro_map.geojson')
+    print(f'{slim(a.out, slim_out)} distinct rail shapes -> {slim_out}')
 
     if segs:
         os.makedirs(os.path.dirname(SEG_OUT), exist_ok=True)
