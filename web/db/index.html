@@ -179,6 +179,33 @@
     <div class="note" style="margin-top:12px" id="bus-method"></div>
   </section>
 
+  <section id="official">
+    <h2>MTC's own figures</h2>
+    <p class="sub" id="off-sub">What MTC publishes on its website, read every day and kept, with earlier years from the Internet Archive's copies of the site going back to 2006.</p>
+    <div class="kpis" id="off-kpis" style="margin-top:6px"></div>
+    <div class="card">
+      <div class="busq" style="margin-bottom:6px"><select id="off-ind" aria-label="Indicator" style="font:inherit;font-size:14px;font-weight:600;padding:7px 10px;border-radius:10px;border:1px solid var(--hair);background:var(--raised);color:var(--ink)"></select><span class="hint" id="off-ind-hint"></span></div>
+      <svg class="chart" id="c-off-perf"></svg><div class="cap" id="cap-off-perf"></div>
+    </div>
+    <div class="card scroll" style="margin-top:12px"><table id="t-off-perf"></table><div class="cap">Financial years (April–March). Each value is from the latest MTC page that lists that year; MTC revises recent years, so a figure can differ from what an older page showed. Blank: no archived page lists that year.</div></div>
+    <div class="grid2" style="margin-top:12px">
+      <div class="card"><div class="legend"><span><i style="background:var(--ink)"></i>Fleet</span><span><i style="background:var(--red)"></i>Scheduled services</span></div><svg class="chart" id="c-off-fleet"></svg><div class="cap" id="cap-off-fleet"></div></div>
+      <div class="card"><div class="legend"><span><i style="background:var(--faint)"></i>mtcbus.org (old site)</span><span><i style="background:var(--blue)"></i>route search</span><span><i style="background:var(--amber)"></i>timing search (mtcbus.tn.gov.in)</span></div><svg class="chart" id="c-off-routes"></svg><div class="cap" id="cap-off-routes"></div></div>
+    </div>
+    <div class="grid2" style="margin-top:12px">
+      <div class="card scroll" style="max-height:520px;overflow-y:auto"><table id="t-off-depots"></table></div>
+      <div class="card scroll" style="max-height:520px;overflow-y:auto"><table id="t-off-services"></table></div>
+    </div>
+  </section>
+
+  <section id="route-changes">
+    <h2>Route changes</h2>
+    <p class="sub" id="rc-sub">Routes MTC adds, withdraws or reroutes, from its own route list and route pages. Nothing here is inferred from GPS: a route counts as added or withdrawn only when MTC's list gains or loses it.</p>
+    <div class="card scroll" id="rc-ann-card" hidden><table id="t-rc-ann"></table><div class="cap" id="cap-rc-ann"></div></div>
+    <div class="card scroll" style="margin-top:12px;max-height:520px;overflow-y:auto"><table id="t-rc-live"></table></div>
+    <div class="card scroll" style="margin-top:12px;max-height:520px;overflow-y:auto"><table id="t-rc-hist"></table><div class="cap">Between successive archived copies of MTC's route search page. Gaps between copies can be months long, so a change is dated only to that window. The old site (to 2017) and the current one (from 2020) number some routes differently, so they are not compared with each other.</div></div>
+  </section>
+
   <section>
     <h2>Fares</h2>
     <p class="sub">MTC's published stage fares for one adult, in force since 29 Jan 2018 (G.O. Ms. No. 48). A stage is about 2 km. Ordinary rises ₹1 a stage to stage 11, then ₹1 every two stages.</p>
@@ -434,6 +461,114 @@ fetch('bus/index.json?t=' + Math.floor(Date.now() / 600000)).then(r => r.json())
 }).catch(e => { $('bus-hint').textContent = 'Could not load the bus archive.'; console.error(e); });
 $('busq').addEventListener('submit', e => { e.preventDefault(); showBus($('bus-reg').value); });
 $('bus-reg').addEventListener('input', e => { const q = e.target.value.toUpperCase(); if (BI && BI.has(q) && e.inputType !== 'insertText') showBus(q); });   // picked from the list
+
+/* MTC's own published figures and route changes (official.json, from mtcbus.tn.gov.in + the Internet Archive) */
+const dmy = d => { if (!d) return '—'; const [y, m, dd] = d.split('-'); return `${+dd} ${'Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec'.split(' ')[m - 1]} ${y}`; };
+const tags = (a, n = 40) => a.slice(0, n).map(r => `<span class="tag">${esc(r)}</span>`).join('') + (a.length > n ? ` <span class="part">+${a.length - n} more</span>` : '');
+function datedLine(svg, series, { h = 220, W = 420, t0, t1 } = {}) {
+  // series: [{pts: [[date, value]], color, label, dots}] on a shared time axis
+  const m = { l: 40, r: 10, t: 10, b: 22 };
+  svg.setAttribute('viewBox', `0 0 ${W} ${h}`); svg.innerHTML = '';
+  const T = d => new Date(d + 'T00:00:00Z').getTime();
+  const all = series.flatMap(s => s.pts);
+  const a = t0 ? T(t0) : Math.min(...all.map(p => T(p[0]))), b = t1 ? T(t1) : Math.max(...all.map(p => T(p[0])));
+  const top = Math.max(...all.map(p => p[1])) * 1.1;
+  const x = d => m.l + (W - m.l - m.r) * (T(d) - a) / Math.max(1, b - a), y = v => m.t + (h - m.t - m.b) * (1 - v / top);
+  for (let k = 0; k <= 4; k++) { const v = top * k / 4; svg.append(S('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: 'grid-line' })); svg.append(S('text', { x: m.l - 6, y: y(v) + 3.5, 'text-anchor': 'end' }, fmt(v))); }
+  const y0 = new Date(a).getUTCFullYear(), y1 = new Date(b).getUTCFullYear(), step = Math.max(1, Math.ceil((y1 - y0 + 1) / 7));
+  for (let yr = y0; yr <= y1; yr += step) { const d = `${yr}-01-01`; if (T(d) >= a) svg.append(S('text', { x: x(d), y: h - 6, 'text-anchor': 'middle' }, yr)); }
+  for (const s of series) {
+    let d = '', prev = null;
+    s.pts.forEach(p => { const gap = prev && T(p[0]) - T(prev[0]) > 3 * 365 * 864e5; d += `${!prev || gap ? 'M' : 'L'}${x(p[0])} ${y(p[1])}`; prev = p; });
+    svg.append(S('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round' }));
+    s.pts.forEach(p => { const c = S('circle', { cx: x(p[0]), cy: y(p[1]), r: 3.2, fill: s.color }); hover(c, `${dmy(p[0])} · ${s.label}: <b>${fmt(p[1])}</b>`); svg.append(c); });
+  }
+}
+const KIND = { route_added: 'Route added', route_withdrawn: 'Route withdrawn', route_termini: 'Termini changed', route_stops: 'Stops changed',
+  timetable_added: 'Timetable added', timetable_withdrawn: 'Timetable withdrawn', timings: 'Timings changed', depot_fleet: 'Depot fleet changed',
+  busservices: 'Service counts changed', depot_units: 'Depots changed', performance: 'Indicators revised', fares_page_changed: 'Fare list changed',
+  acserviceinfo_changed: 'A/C schedule (PDF) changed', nightserviceinfo_changed: 'Night schedule (PDF) changed' };
+function changeDetail(c) {
+  if (c.kind === 'route_added') return `${esc(c.after?.origin)} → ${esc(c.after?.destination)}${c.after?.stops ? ` · ${c.after.stops.length} stops` : ''}`;
+  if (c.kind === 'route_withdrawn') return `was ${esc(c.before?.origin)} → ${esc(c.before?.destination)}`;
+  if (c.kind === 'route_termini') return `${esc(c.before.join(' → '))} ⟶ <b>${esc(c.after.join(' → '))}</b>`;
+  if (c.kind === 'route_stops') return (c.reordered ? 'same stops, new order' : '') + (c.added.length ? `+ ${esc(c.added.join(', '))}` : '') + (c.added.length && c.removed.length ? '<br>' : '') + (c.removed.length ? `− ${esc(c.removed.join(', '))}` : '');
+  if (c.kind === 'timings') return `${esc(c.pair)}: ${c.trips[0]} → <b>${c.trips[1]}</b> departures`;
+  if (c.kind === 'depot_fleet') return `${esc(c.depot)}: fleet/scheduled ${c.before ? c.before.join('/') : 'new'} → <b>${c.after ? c.after.join('/') : 'gone'}</b>`;
+  if (c.kind === 'busservices') return Object.entries(c.changed).map(([k, v]) => `${esc(k)} ${v[0] ?? '—'} → <b>${v[1] ?? '—'}</b>`).join('<br>');
+  if (c.kind === 'depot_units') return (c.added.length ? `+ ${esc(c.added.join(', '))}` : '') + (c.removed.length ? ` − ${esc(c.removed.join(', '))}` : '');
+  if (c.kind === 'performance') return Object.entries(c.changed).slice(0, 6).map(([k, v]) => `${esc(k)}: ${v[0]} → <b>${v[1]}</b>`).join('<br>');
+  return '';
+}
+fetch('official.json?t=' + Math.floor(Date.now() / 600000)).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(O => {
+  const P = O.performance, FL = O.fleet.latest, SV = O.services.latest || {}, RT = O.routes;
+  const last = (k) => { const v = P.values[k] || []; for (let i = v.length - 1; i >= 0; i--) if (v[i] != null) return [v[i], P.years[i]]; return [null]; };
+  const pass = last('Passengers per day (lakh)');
+  $('off-sub').innerHTML = `What MTC publishes on <a href="https://mtcbus.tn.gov.in/">mtcbus.tn.gov.in</a>, read every day and kept, with earlier years from the Internet Archive's copies of the site going back to 2006. Fleet table updated by MTC on ${esc(FL?.updated_on || '—')}; read ${esc(O.built.slice(0, 10))}.`;
+  $('off-kpis').innerHTML = [[fmt(FL?.total?.fleet), 'buses in MTC\'s fleet'], [fmt(FL?.total?.scheduled), 'scheduled services'], [fmt(FL?.depots?.length), 'depots'],
+    [fmt(RT.latest?.listed), 'route numbers on MTC\'s list'], [pass[0] != null ? pass[0] + ' lakh' : '—', `passengers a day (${pass[1] || ''})`], [fmt(SV['Total No of singles per day']), 'single trips a day']]
+    .map(([b, s]) => `<div class="kpi"><b>${b}</b><span>${s}</span></div>`).join('');
+
+  // indicator over the years
+  const sel = $('off-ind');
+  sel.innerHTML = P.items.map(k => `<option>${esc(k)}</option>`).join('');
+  const draw = () => {
+    const k = sel.value, v = P.values[k], idx = v.map((x, i) => x == null ? -1 : i).filter(i => i >= 0);
+    if (!idx.length) return;
+    const yrs = P.years.slice(idx[0]), vals = v.slice(idx[0]);
+    plainBars($('c-off-perf'), yrs.map(y => y.slice(2, 4) + '–' + y.slice(5)), vals.map(x => x == null ? 0 : x), { fmtv: x => (x % 1 ? x.toLocaleString('en-IN', { maximumFractionDigits: 3 }) : fmt(x)), labelEvery: yrs.length > 14 ? 2 : 1, color: css('--red') });
+    const pv = P.part_year?.values?.[k];
+    const miss = yrs.filter((y, i) => vals[i] == null);
+    $('off-ind-hint').textContent = `${yrs[0]} to ${yrs[yrs.length - 1]}`;
+    $('cap-off-perf').innerHTML = (pv != null ? `${esc(P.part_year.label)}: <b>${pv}</b> (part year, not shown). ` : '') + (miss.length ? `No archived page lists ${miss.join(', ')}. ` : '') + (P.notes?.[k] ? esc(P.notes[k]) + ' ' : '') + `From ${P.pages} archived and live copies of MTC's performance page.`;
+  };
+  sel.onchange = draw; draw();
+  const yrsShort = P.years.map(y => y.slice(2, 4) + '–' + y.slice(5));
+  $('t-off-perf').innerHTML = `<tr><th>Indicator</th>${yrsShort.map(y => `<th class="n">${y}</th>`).join('')}${P.part_year ? `<th class="n">${esc(P.part_year.label.replace(/\(|\)/g, ''))}</th>` : ''}</tr>`
+    + P.items.map(k => `<tr><td>${esc(k)}</td>${P.values[k].map((v, i) => `<td class="n" title="as published ${esc(P.as_of[k][i] || '')}">${v == null ? '' : v.toLocaleString('en-IN')}</td>`).join('')}${P.part_year ? `<td class="n part">${P.part_year.values[k] ?? ''}</td>` : ''}</tr>`).join('');
+
+  // fleet totals over time (one point per change)
+  const FH = O.fleet.history;
+  if (FH.length) {
+    datedLine($('c-off-fleet'), [{ pts: FH.map(h => [h.date, h.fleet]), color: css('--ink'), label: 'Fleet' }, { pts: FH.map(h => [h.date, h.scheduled]), color: css('--red'), label: 'Scheduled' }]);
+    $('cap-off-fleet').textContent = `MTC totals from its fleet & scheduled services page, each time it changed (${FH.length} versions, ${dmy(FH[0].date)} – ${dmy(FH[FH.length - 1].date)}). Dated by when the page was copied, not by when MTC changed it.`;
+  }
+  // route numbers on MTC's list over time
+  const RS = RT.series;
+  if (RS.length) {
+    datedLine($('c-off-routes'), [{ pts: RS.filter(r => r.site === 'old').map(r => [r.date, r.routes]), color: css('--faint'), label: 'mtcbus.org' },
+      { pts: RS.filter(r => r.site === 'timing').map(r => [r.date, r.routes]), color: css('--amber'), label: 'timing search' },
+      { pts: RS.filter(r => r.site === 'route').map(r => [r.date, r.routes]), color: css('--blue'), label: 'route search' }].filter(s => s.pts.length));
+    $('cap-off-routes').textContent = `Route numbers in the drop-downs of MTC's route and timing search pages, ${RS.length} copies. The old site listed every variant code (e.g. X…, S…, …GS), so its count is not comparable with today's.`;
+  }
+  // depots and services
+  if (FL?.depots) {
+    const formed = {}; (O.depots || []).forEach(d => { formed[d.depot.replace(/\s*\(.*$/, '').trim()] = (d['formed in'] || '').slice(-4) || (/TAKEN OVER/.test(d.group) ? '1972' : ''); });
+    $('t-off-depots').innerHTML = '<tr><th>Region</th><th>Depot</th><th>Code</th><th class="n">Fleet</th><th class="n">Sched.</th><th class="n">Formed</th></tr>'
+      + FL.depots.map(d => `<tr><td>${esc((d.region || '').replace(/\s*\(.*$/, ''))}</td><td>${esc(d.depot)}</td><td>${esc(d.code)}</td><td class="n">${fmt(d.fleet)}</td><td class="n">${fmt(d.scheduled)}</td><td class="n">${esc(formed[d.depot.replace(/\s*\(.*$/, '').trim()] || '')}</td></tr>`).join('')
+      + `<tr><td colspan="3"><b>MTC total</b></td><td class="n"><b>${fmt(FL.total?.fleet)}</b></td><td class="n"><b>${fmt(FL.total?.scheduled)}</b></td><td></td></tr>`;
+  }
+  const SH = O.services.history, prevS = SH.length > 1 ? SH[SH.length - 2] : null;
+  $('t-off-services').innerHTML = `<tr><th>Service type (MTC)</th><th class="n">Now</th>${prevS ? `<th class="n">${dmy(prevS.date)}</th>` : ''}</tr>`
+    + Object.entries(SV).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="n"><b>${fmt(v)}</b></td>${prevS ? `<td class="n">${prevS.counts[k] == null ? '—' : fmt(prevS.counts[k])}</td>` : ''}</tr>`).join('');
+
+  // route changes: announced, live log, archive
+  const AN = O.announced || [];
+  if (AN.length) {
+    $('rc-ann-card').hidden = false;
+    $('t-rc-ann').innerHTML = '<tr><th>Announced</th><th>Route</th><th>From → to</th><th>Via</th><th class="n">Departures</th><th>On MTC\'s route list?</th></tr>'
+      + AN.slice().reverse().map(a => `<tr><td>${dmy(a.date)}</td><td><span class="tag">${esc(a.route)}</span></td><td>${esc(a.from)} → ${esc(a.to)}</td><td style="font-size:12px;color:var(--soft)">${esc((a.via || []).join(' · '))}</td><td class="n" style="white-space:normal">${esc((a.departures_from_origin || []).join(' '))}</td><td>${a.on_mtc_route_list == null ? '—' : a.on_mtc_route_list ? 'yes' : '<b>not yet</b>'}</td></tr>`).join('');
+    $('cap-rc-ann').textContent = 'Routes MTC announced outside its website (for example on its social media), entered by hand from the announcement with its source. "Not yet" means MTC\'s own route search does not list the number; the daily check flags it when it appears.';
+  }
+  const CH = O.changes.recent.slice().reverse();
+  $('rc-sub').innerHTML += O.changes.total ? ` <b>${fmt(O.changes.total)}</b> changes logged since daily checks began.` : ' Daily checks began on 13 Nov 2026; changes will be listed here as MTC makes them.';
+  $('t-rc-live').innerHTML = '<tr><th>Seen</th><th>Change</th><th>Route / depot</th><th>Detail</th></tr>'
+    + (CH.length ? CH.slice(0, 150).map(c => `<tr><td style="white-space:nowrap">${dmy(c.date)}</td><td>${KIND[c.kind] || esc(c.kind)}</td><td>${c.route ? `<span class="tag">${esc(c.route)}</span>` : esc(c.depot || '')}</td><td style="font-size:12.5px">${changeDetail(c)}</td></tr>`).join('')
+      : '<tr><td colspan="4" class="part">No changes yet since the first daily copy.</td></tr>');
+  const LC = RT.list_changes.slice().reverse();
+  $('t-rc-hist').innerHTML = '<tr><th>Between copies</th><th>Page</th><th>Added to MTC\'s list</th><th>Gone from it</th></tr>'
+    + LC.map(e => `<tr><td style="white-space:nowrap">${dmy(e.from)} –<br>${dmy(e.to)}</td><td>${({ old: 'mtcbus.org', route: 'route search', timing: 'timing search' })[e.site]}</td><td>${e.added.length ? `<b>${e.added.length}</b> ` + tags(e.added, 30) : ''}</td><td>${e.withdrawn.length ? `<b>${e.withdrawn.length}</b> ` + tags(e.withdrawn, 30) : ''}</td></tr>`).join('');
+}).catch(e => { $('off-sub').textContent = 'Could not load MTC\'s published figures.'; console.error(e); });
 </script>
 </body>
 </html>
