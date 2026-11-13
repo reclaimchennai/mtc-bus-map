@@ -554,7 +554,7 @@ fetch('official.json?t=' + Math.floor(Date.now() / 600000)).then(r => { if (!r.o
     const k = sel.value, v = P.values[k], idx = v.map((x, i) => x == null ? -1 : i).filter(i => i >= 0);
     if (!idx.length) return;
     const yrs = P.years.slice(idx[0]), vals = v.slice(idx[0]);
-    plainBars($('c-off-perf'), yrs.map(y => y.slice(2, 4) + '–' + y.slice(5)), vals.map(x => x == null ? 0 : x), { fmtv: x => (x % 1 ? x.toLocaleString('en-IN', { maximumFractionDigits: 3 }) : fmt(x)), labelEvery: yrs.length > 14 ? 2 : 1, color: css('--red') });
+    plainBars($('c-off-perf'), yrs.map(y => y.slice(2, 4) + '–' + y.slice(5)), vals.map(x => x == null ? 0 : x), { fmtv: x => (x % 1 ? x.toLocaleString('en-IN', { maximumFractionDigits: 3 }) : fmt(x)), labelEvery: Math.max(1, Math.ceil(yrs.length / 14)), color: css('--red') });
     const pv = P.part_year?.values?.[k];
     const miss = yrs.filter((y, i) => vals[i] == null);
     $('off-ind-hint').textContent = `${yrs[0]} to ${yrs[yrs.length - 1]}`;
