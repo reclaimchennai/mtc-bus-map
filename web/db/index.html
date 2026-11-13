@@ -76,6 +76,8 @@
   .busq .hint a { cursor: pointer; font-weight: 600; }
   #bus-out[hidden] { display: none; }
   .part { color: var(--faint); font-style: italic; }
+  td.src-gov { color: var(--blue); }
+  td.src-der { color: var(--blue); font-style: italic; }
   footer { margin-top: 40px; color: var(--faint); font-size: 12.5px; line-height: 1.55; }
   @media (max-width: 560px) { body { padding: 0 12px 48px; } .kpi b { font-size: 22px; } #map { height: 340px; } }
 </style>
@@ -187,10 +189,10 @@
       <div class="busq" style="margin-bottom:6px"><select id="off-ind" aria-label="Indicator" style="font:inherit;font-size:14px;font-weight:600;padding:7px 10px;border-radius:10px;border:1px solid var(--hair);background:var(--raised);color:var(--ink)"></select><span class="hint" id="off-ind-hint"></span></div>
       <svg class="chart" id="c-off-perf"></svg><div class="cap" id="cap-off-perf"></div>
     </div>
-    <div class="card scroll" style="margin-top:12px"><table id="t-off-perf"></table><div class="cap">Financial years (April–March). Each value is from the latest MTC page that lists that year; MTC revises recent years, so a figure can differ from what an older page showed. Blank: no archived page lists that year.</div></div>
+    <div class="card scroll" style="margin-top:12px"><table id="t-off-perf"></table><div class="cap">Financial years (April–March). Black: MTC's own figures, from the latest copy of its performance page that lists the year (MTC revises recent years), else its annual report. <span style="color:var(--blue)">Blue</span>: Government figures where MTC's are not online — the Tamil Nadu Transport Department's policy notes, and the Ministry of Road Transport's yearly review of state transport undertakings (2008–09 to 2013–14); † computed (yearly passengers ÷ 365). Hover a value for its source. —: not published in any source found.</div></div>
     <div class="grid2" style="margin-top:12px">
       <div class="card"><div class="legend"><span><i style="background:var(--ink)"></i>Fleet</span><span><i style="background:var(--red)"></i>Scheduled services</span></div><svg class="chart" id="c-off-fleet"></svg><div class="cap" id="cap-off-fleet"></div></div>
-      <div class="card"><div class="legend"><span><i style="background:var(--faint)"></i>mtcbus.org (old site)</span><span><i style="background:var(--blue)"></i>route search</span><span><i style="background:var(--amber)"></i>timing search (mtcbus.tn.gov.in)</span></div><svg class="chart" id="c-off-routes"></svg><div class="cap" id="cap-off-routes"></div></div>
+      <div class="card"><div class="legend"><span><i style="background:var(--red)"></i>routes at 31 March (MTC's count)</span><span><i style="background:var(--faint)"></i>mtcbus.org (old site)</span><span><i style="background:var(--blue)"></i>route search</span><span><i style="background:var(--amber)"></i>timing search (mtcbus.tn.gov.in)</span></div><svg class="chart" id="c-off-routes"></svg><div class="cap" id="cap-off-routes"></div></div>
     </div>
     <div class="grid2" style="margin-top:12px">
       <div class="card scroll" style="max-height:520px;overflow-y:auto"><table id="t-off-depots"></table></div>
@@ -202,6 +204,7 @@
     <h2>Route changes</h2>
     <p class="sub" id="rc-sub">Routes MTC adds, withdraws or reroutes, from its own route list and route pages. Nothing here is inferred from GPS: a route counts as added or withdrawn only when MTC's list gains or loses it.</p>
     <div class="card scroll" id="rc-ann-card" hidden><table id="t-rc-ann"></table><div class="cap" id="cap-rc-ann"></div></div>
+    <div class="card scroll" style="margin-top:12px"><table id="t-rc-year"></table><div class="cap">From MTC's annual reports ("Select indicators on the performance"): routes opened and withdrawn during each financial year, and the count at its end. The reports online start with 2015-16, which also gives 2014-15.</div></div>
     <div class="card scroll" style="margin-top:12px;max-height:520px;overflow-y:auto"><table id="t-rc-live"></table></div>
     <div class="card scroll" style="margin-top:12px;max-height:520px;overflow-y:auto"><table id="t-rc-hist"></table><div class="cap">Between successive archived copies of MTC's route search page. Gaps between copies can be months long, so a change is dated only to that window. The old site (to 2017) and the current one (from 2020) number some routes differently, so they are not compared with each other.</div></div>
   </section>
@@ -477,11 +480,12 @@ function datedLine(svg, series, { h = 220, W = 420, t0, t1 } = {}) {
   for (let k = 0; k <= 4; k++) { const v = top * k / 4; svg.append(S('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: 'grid-line' })); svg.append(S('text', { x: m.l - 6, y: y(v) + 3.5, 'text-anchor': 'end' }, fmt(v))); }
   const y0 = new Date(a).getUTCFullYear(), y1 = new Date(b).getUTCFullYear(), step = Math.max(1, Math.ceil((y1 - y0 + 1) / 7));
   for (let yr = y0; yr <= y1; yr += step) { const d = `${yr}-01-01`; if (T(d) >= a) svg.append(S('text', { x: x(d), y: h - 6, 'text-anchor': 'middle' }, yr)); }
+  series.forEach(s => { s.pts = s.pts.filter(p => p[1] != null); });
   for (const s of series) {
     let d = '', prev = null;
     s.pts.forEach(p => { const gap = prev && T(p[0]) - T(prev[0]) > 3 * 365 * 864e5; d += `${!prev || gap ? 'M' : 'L'}${x(p[0])} ${y(p[1])}`; prev = p; });
     svg.append(S('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2, 'stroke-linejoin': 'round' }));
-    s.pts.forEach(p => { const c = S('circle', { cx: x(p[0]), cy: y(p[1]), r: 3.2, fill: s.color }); hover(c, `${dmy(p[0])} · ${s.label}: <b>${fmt(p[1])}</b>`); svg.append(c); });
+    s.pts.forEach(p => { const c = S('circle', { cx: x(p[0]), cy: y(p[1]), r: 3.2, fill: s.color }); hover(c, `${dmy(p[0])} · ${s.label}: <b>${fmt(p[1])}</b>${p[2] ? '<br>' + esc(p[2]) : ''}`); svg.append(c); });
   }
 }
 const KIND = { route_added: 'Route added', route_withdrawn: 'Route withdrawn', route_termini: 'Termini changed', route_stops: 'Stops changed',
@@ -525,21 +529,22 @@ fetch('official.json?t=' + Math.floor(Date.now() / 600000)).then(r => { if (!r.o
   sel.onchange = draw; draw();
   const yrsShort = P.years.map(y => y.slice(2, 4) + '–' + y.slice(5));
   $('t-off-perf').innerHTML = `<tr><th>Indicator</th>${yrsShort.map(y => `<th class="n">${y}</th>`).join('')}${P.part_year ? `<th class="n">${esc(P.part_year.label.replace(/\(|\)/g, ''))}</th>` : ''}</tr>`
-    + P.items.map(k => `<tr><td>${esc(k)}</td>${P.values[k].map((v, i) => `<td class="n" title="as published ${esc(P.as_of[k][i] || '')}">${v == null ? '' : v.toLocaleString('en-IN')}</td>`).join('')}${P.part_year ? `<td class="n part">${P.part_year.values[k] ?? ''}</td>` : ''}</tr>`).join('');
+    + P.items.map(k => `<tr><td>${esc(k)}</td>${P.values[k].map((v, i) => `<td class="n${({ gov: ' src-gov', derived: ' src-der' })[P.kind?.[k]?.[i]] || ''}" title="${esc(P.as_of[k][i] || '')}">${v == null ? '<span class="part">—</span>' : v.toLocaleString('en-IN') + (P.kind?.[k]?.[i] === 'derived' ? '†' : '')}</td>`).join('')}${P.part_year ? `<td class="n part">${P.part_year.values[k] ?? ''}</td>` : ''}</tr>`).join('');
 
   // fleet totals over time (one point per change)
   const FH = O.fleet.history;
   if (FH.length) {
-    datedLine($('c-off-fleet'), [{ pts: FH.map(h => [h.date, h.fleet]), color: css('--ink'), label: 'Fleet' }, { pts: FH.map(h => [h.date, h.scheduled]), color: css('--red'), label: 'Scheduled' }]);
-    $('cap-off-fleet').textContent = `MTC totals from its fleet & scheduled services page, each time it changed (${FH.length} versions, ${dmy(FH[0].date)} – ${dmy(FH[FH.length - 1].date)}). Dated by when the page was copied, not by when MTC changed it.`;
+    datedLine($('c-off-fleet'), [{ pts: FH.map(h => [h.date, h.fleet, h.source]), color: css('--ink'), label: 'Fleet' }, { pts: FH.map(h => [h.date, h.scheduled, h.source]), color: css('--red'), label: 'Scheduled' }]);
+    $('cap-off-fleet').textContent = `${FH.length} points, ${dmy(FH[0].date)} – ${dmy(FH[FH.length - 1].date)}: MTC's fleet & scheduled services page each time it changed (dated when copied), and between copies the fleet at 31 March from MTC's annual reports and the state policy notes, or for 2008–09 to 2012–13 the Ministry's average fleet for the year. Hover a point for its source. Scheduled services for 2008–2013 are not in any source found.`;
   }
   // route numbers on MTC's list over time
   const RS = RT.series;
   if (RS.length) {
     datedLine($('c-off-routes'), [{ pts: RS.filter(r => r.site === 'old').map(r => [r.date, r.routes]), color: css('--faint'), label: 'mtcbus.org' },
       { pts: RS.filter(r => r.site === 'timing').map(r => [r.date, r.routes]), color: css('--amber'), label: 'timing search' },
-      { pts: RS.filter(r => r.site === 'route').map(r => [r.date, r.routes]), color: css('--blue'), label: 'route search' }].filter(s => s.pts.length));
-    $('cap-off-routes').textContent = `Route numbers in the drop-downs of MTC's route and timing search pages, ${RS.length} copies. The old site listed every variant code (e.g. X…, S…, …GS), so its count is not comparable with today's.`;
+      { pts: RS.filter(r => r.site === 'route').map(r => [r.date, r.routes]), color: css('--blue'), label: 'route search' },
+      { pts: RS.filter(r => r.site === 'count').map(r => [r.date, r.routes, r.source]), color: css('--red'), label: 'routes at 31 March' }].filter(s => s.pts.length));
+    $('cap-off-routes').textContent = `Red: MTC's own count of routes at 31 March, from its annual reports and the state policy notes, 2010 on (no source found gives 31 March 2013). The other lines count route numbers in the drop-downs of MTC's route and timing search pages (${RS.filter(r => r.site !== 'count').length} copies); the old site listed every variant code (X…, S…, …GS), so those counts run higher.`;
   }
   // depots and services
   if (FL?.depots) {
@@ -565,6 +570,9 @@ fetch('official.json?t=' + Math.floor(Date.now() / 600000)).then(r => { if (!r.o
   $('t-rc-live').innerHTML = '<tr><th>Seen</th><th>Change</th><th>Route / depot</th><th>Detail</th></tr>'
     + (CH.length ? CH.slice(0, 150).map(c => `<tr><td style="white-space:nowrap">${dmy(c.date)}</td><td>${KIND[c.kind] || esc(c.kind)}</td><td>${c.route ? `<span class="tag">${esc(c.route)}</span>` : esc(c.depot || '')}</td><td style="font-size:12.5px">${changeDetail(c)}</td></tr>`).join('')
       : '<tr><td colspan="4" class="part">No changes yet since the first daily copy.</td></tr>');
+  const YR = RT.yearly || [];
+  $('t-rc-year').innerHTML = '<tr><th>Year</th><th class="n">Routes opened</th><th class="n">Withdrawn</th><th class="n">Routes at 31 March</th></tr>'
+    + YR.slice().reverse().map(r => `<tr><td>${esc(r.year)}</td><td class="n">${r.opened ?? '—'}</td><td class="n">${r.withdrawn ?? '—'}</td><td class="n"><b>${r.at_31_march ?? '—'}</b></td></tr>`).join('');
   const LC = RT.list_changes.slice().reverse();
   $('t-rc-hist').innerHTML = '<tr><th>Between copies</th><th>Page</th><th>Added to MTC\'s list</th><th>Gone from it</th></tr>'
     + LC.map(e => `<tr><td style="white-space:nowrap">${dmy(e.from)} –<br>${dmy(e.to)}</td><td>${({ old: 'mtcbus.org', route: 'route search', timing: 'timing search' })[e.site]}</td><td>${e.added.length ? `<b>${e.added.length}</b> ` + tags(e.added, 30) : ''}</td><td>${e.withdrawn.length ? `<b>${e.withdrawn.length}</b> ` + tags(e.withdrawn, 30) : ''}</td></tr>`).join('');
