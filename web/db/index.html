@@ -77,6 +77,14 @@
   #bus-out[hidden] { display: none; }
   .part { color: var(--faint); font-style: italic; }
   td.src-gov { color: var(--blue); }
+  .sel { font: inherit; font-size: 14px; font-weight: 600; padding: 7px 10px; border-radius: 10px; border: 1px solid var(--hair); background: var(--raised); color: var(--ink); max-width: 100%; }
+  #t-rp tr.row { cursor: pointer; } #t-rp tr.row:hover td { background: var(--sunken); }
+  #t-rp td.sp { width: 130px; padding: 4px 8px; } .rnote { color: var(--faint); font-size: 11.5px; }
+  #t-rp tr.det svg.chart { max-width: 760px; }
+  #t-rp tr.det td { background: var(--sunken); }
+  .flag { color: var(--red); font-weight: 700; }
+  #t-gl td, #t-gl th, #t-rp-tables td { white-space: nowrap; }
+  details > summary { list-style-position: inside; }
   td.src-der { color: var(--blue); font-style: italic; }
   footer { margin-top: 40px; color: var(--faint); font-size: 12.5px; line-height: 1.55; }
   @media (max-width: 560px) { body { padding: 0 12px 48px; } .kpi b { font-size: 22px; } #map { height: 340px; } }
@@ -207,6 +215,32 @@
     <div class="card scroll" style="margin-top:12px"><table id="t-rc-year"></table><div class="cap">From MTC's annual reports ("Select indicators on the performance"): routes opened and withdrawn during each financial year, and the count at its end. The reports online start with 2015-16, which also gives 2014-15.</div></div>
     <div class="card scroll" style="margin-top:12px;max-height:520px;overflow-y:auto"><table id="t-rc-live"></table></div>
     <div class="card scroll" style="margin-top:12px;max-height:520px;overflow-y:auto"><table id="t-rc-hist"></table><div class="cap">Between successive archived copies of MTC's route search page. Gaps between copies can be months long, so a change is dated only to that window. The old site (to 2017) and the current one (from 2020) number some routes differently, so they are not compared with each other.</div></div>
+  </section>
+
+  <section id="since-1972">
+    <h2>MTC since 1972</h2>
+    <p class="sub">From the "Performance at a glance" table at the back of every MTC annual report: one row a year since Pallavan Transport Corporation began in 1972–73. Financial years (April–March); money in rupees lakh (1 lakh = ₹1,00,000; 100 lakh = ₹1 crore).</p>
+    <div class="card"><div class="legend"><span><i style="background:var(--green)"></i>Total earnings</span><span><i style="background:var(--ink)"></i>Total cost</span><span><i style="background:var(--red)"></i>Profit / loss</span></div>
+      <svg class="chart" id="c-gl-money"></svg><div class="cap" id="cap-gl-money"></div></div>
+    <div class="card" style="margin-top:12px">
+      <div class="busq" style="margin-bottom:6px"><select id="gl-ind" aria-label="Indicator" class="sel"></select><span class="hint" id="gl-hint"></span></div>
+      <svg class="chart" id="c-gl"></svg><div class="cap" id="cap-gl"></div></div>
+    <details class="card" style="margin-top:12px"><summary style="cursor:pointer;font-weight:700">The whole table, 1972–73 on</summary><div class="scroll" style="margin-top:10px;max-height:560px;overflow-y:auto"><table id="t-gl"></table></div><div class="cap" id="cap-gl-t"></div></details>
+  </section>
+
+  <section id="reports">
+    <h2>Everything in the annual reports</h2>
+    <p class="sub" id="rp-sub">Every figure in MTC's annual reports, read line by line and lined up across the years.</p>
+    <div class="card"><div class="legend" id="lg-rp-cost"></div><svg class="chart" id="c-rp-cost"></svg><div class="cap" id="cap-rp-cost"></div></div>
+    <div class="card" style="margin-top:12px">
+      <div class="busq" style="margin-bottom:8px"><input id="rp-q" placeholder="Search: accidents, diesel, pension, MACT…" autocomplete="off" style="width:min(340px,100%);text-transform:none;letter-spacing:0;font-weight:500;font-size:15px"><select id="rp-part" class="sel" aria-label="Part of the report"></select><label class="hint" style="display:inline-flex;gap:6px;align-items:center"><input type="checkbox" id="rp-full">only series with every year</label></div>
+      <div class="hint" id="rp-count" style="margin-bottom:6px"></div>
+      <div class="scroll" style="max-height:640px;overflow-y:auto"><table id="t-rp"></table></div>
+      <div class="cap">Click a row for its chart and the report page of each figure. Each report gives its year and the year before; where a later report restates a figure, the later one is shown (↻ marks series with restated years). Labels as printed; the Tamil column of the bilingual tables is left out.</div>
+    </div>
+    <details class="card" style="margin-top:12px" id="rp-tables-card"><summary style="cursor:pointer;font-weight:700">Tables with more than two columns (reserves, loan schedules, assets), by report</summary>
+      <div class="busq" style="margin:10px 0 6px"><select id="rp-rep" class="sel" aria-label="Report"></select><input id="rp-tq" placeholder="Filter rows" autocomplete="off" style="width:min(260px,100%);text-transform:none;letter-spacing:0;font-weight:500;font-size:15px"></div>
+      <div class="scroll" style="max-height:560px;overflow-y:auto"><table id="t-rp-tables"></table></div></details>
   </section>
 
   <section>
@@ -577,6 +611,122 @@ fetch('official.json?t=' + Math.floor(Date.now() / 600000)).then(r => { if (!r.o
   $('t-rc-hist').innerHTML = '<tr><th>Between copies</th><th>Page</th><th>Added to MTC\'s list</th><th>Gone from it</th></tr>'
     + LC.map(e => `<tr><td style="white-space:nowrap">${dmy(e.from)} –<br>${dmy(e.to)}</td><td>${({ old: 'mtcbus.org', route: 'route search', timing: 'timing search' })[e.site]}</td><td>${e.added.length ? `<b>${e.added.length}</b> ` + tags(e.added, 30) : ''}</td><td>${e.withdrawn.length ? `<b>${e.withdrawn.length}</b> ` + tags(e.withdrawn, 30) : ''}</td></tr>`).join('');
 }).catch(e => { $('off-sub').textContent = 'Could not load MTC\'s published figures.'; console.error(e); });
+/* MTC's annual reports: the 1972-on glance table, and every figure of every report as series (reports.json) */
+const fnum = v => v == null ? '—' : (Math.abs(v) >= 1000 || Number.isInteger(v) ? Math.round(v).toLocaleString('en-IN') : (+v).toLocaleString('en-IN', { maximumFractionDigits: 3 }));
+const shortY = y => y.slice(2, 4) + '–' + y.slice(-2);
+function catChart(svg, cats, series, { h = 240, W = 720, bars = [], zero = true, labelEvery = 1 } = {}) {
+  // series: lines [{vals, color, label}]; bars: [{vals, color, label}] (signed, from 0)
+  const m = { l: 52, r: 8, t: 10, b: 22 };
+  svg.setAttribute('viewBox', `0 0 ${W} ${h}`); svg.innerHTML = '';
+  const all = [...series, ...bars].flatMap(s => s.vals.filter(v => v != null));
+  if (!all.length) return;
+  let lo = Math.min(zero ? 0 : Infinity, ...all), hi = Math.max(zero ? 0 : -Infinity, ...all);
+  if (hi === lo) hi = lo + 1;
+  const pad = (hi - lo) * .08; hi += pad; if (lo < 0) lo -= pad;
+  const n = cats.length, bw = (W - m.l - m.r) / n, x = i => m.l + bw * (i + .5), y = v => m.t + (h - m.t - m.b) * (hi - v) / (hi - lo);
+  for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4; svg.append(S('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: 'grid-line' })); svg.append(S('text', { x: m.l - 6, y: y(v) + 3.5, 'text-anchor': 'end' }, fnum(v))); }
+  if (lo < 0) svg.append(S('line', { x1: m.l, x2: W - m.r, y1: y(0), y2: y(0), stroke: css('--soft'), 'stroke-width': 1 }));
+  bars.forEach((b, bi) => b.vals.forEach((v, i) => { if (v == null) return; const r = S('rect', { x: x(i) - bw * .38 + bw * .76 * bi / bars.length, y: Math.min(y(v), y(0)), width: bw * .76 / bars.length, height: Math.abs(y(v) - y(0)), rx: 2, fill: b.colorOf ? b.colorOf(v, i) : b.color, opacity: .9 }); hover(r, `${esc(cats[i])} · ${esc(b.label)}: <b>${fnum(v)}</b>${b.note?.[i] ? '<br>' + esc(b.note[i]) : ''}`); svg.append(r); }));
+  series.forEach(s => {
+    let d = '', pen = false;
+    s.vals.forEach((v, i) => { if (v == null) { pen = false; return; } d += `${pen ? 'L' : 'M'}${x(i)} ${y(v)}`; pen = true; });
+    svg.append(S('path', { d, fill: 'none', stroke: s.color, 'stroke-width': 2.2, 'stroke-linejoin': 'round' }));
+    s.vals.forEach((v, i) => { if (v == null) return; const c = S('circle', { cx: x(i), cy: y(v), r: n > 30 ? 2.4 : 3.5, fill: s.color }); hover(c, `${esc(cats[i])} · ${esc(s.label)}: <b>${fnum(v)}</b>${s.note?.[i] ? '<br>' + esc(s.note[i]) : ''}`); svg.append(c); });
+  });
+  for (let i = 0; i < n; i += labelEvery) svg.append(S('text', { x: x(i), y: h - 6, 'text-anchor': 'middle' }, shortY(cats[i])));
+}
+function stackChart(svg, cats, stacks, line, { h = 260, W = 720 } = {}) {
+  const m = { l: 52, r: 8, t: 10, b: 22 };
+  svg.setAttribute('viewBox', `0 0 ${W} ${h}`); svg.innerHTML = '';
+  const tot = cats.map((_, i) => stacks.reduce((a, s) => a + Math.max(0, s.vals[i] || 0), 0));
+  const hi = Math.max(...tot, ...(line ? line.vals.filter(v => v != null) : [0])) * 1.08;
+  const n = cats.length, bw = (W - m.l - m.r) / n, x = i => m.l + bw * (i + .5), y = v => m.t + (h - m.t - m.b) * (1 - v / hi);
+  for (let k = 0; k <= 4; k++) { const v = hi * k / 4; svg.append(S('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: 'grid-line' })); svg.append(S('text', { x: m.l - 6, y: y(v) + 3.5, 'text-anchor': 'end' }, fnum(v))); }
+  cats.forEach((c, i) => { let acc = 0; stacks.forEach(s => { const v = Math.max(0, s.vals[i] || 0); if (!v) return; const r = S('rect', { x: x(i) - bw * .36, y: y(acc + v), width: bw * .72, height: y(acc) - y(acc + v), fill: s.color }); hover(r, `${esc(c)} · ${esc(s.label)}: <b>₹${fnum(v)} lakh</b> (${(100 * v / tot[i]).toFixed(0)}% of cost)`); svg.append(r); acc += v; }); });
+  if (line) { let d = ''; line.vals.forEach((v, i) => { if (v != null) d += `${d ? 'L' : 'M'}${x(i)} ${y(v)}`; }); svg.append(S('path', { d, fill: 'none', stroke: line.color, 'stroke-width': 2.5 })); line.vals.forEach((v, i) => { if (v == null) return; const c = S('circle', { cx: x(i), cy: y(v), r: 4, fill: line.color }); hover(c, `${esc(cats[i])} · ${esc(line.label)}: <b>₹${fnum(v)} lakh</b>`); svg.append(c); }); }
+  cats.forEach((c, i) => svg.append(S('text', { x: x(i), y: h - 6, 'text-anchor': 'middle' }, shortY(c))));
+}
+function spark(vals) {
+  const ok = vals.filter(v => v != null); if (ok.length < 2) return '';
+  const lo = Math.min(...ok), hi = Math.max(...ok), W = 120, H = 26, n = vals.length;
+  let d = ''; vals.forEach((v, i) => { if (v == null) return; const x = 2 + (W - 4) * i / (n - 1), y = H - 3 - (H - 6) * (hi === lo ? .5 : (v - lo) / (hi - lo)); d += `${d && vals[i - 1] != null ? 'L' : 'M'}${x.toFixed(1)} ${y.toFixed(1)}`; });
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}"><path d="${d}" fill="none" stroke="${css('--blue')}" stroke-width="1.6"/></svg>`;
+}
+fetch('reports.json?t=' + Math.floor(Date.now() / 3600000)).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(R => {
+  const G = R.glance;
+  if (G) {
+    const Y = G.years, V = G.values, flagOf = {};
+    (G.flags || []).forEach(f => { flagOf[f.item + '|' + f.year] = f; });
+    catChart($('c-gl-money'), Y, [{ vals: V.total_earnings_rs_lakh, color: css('--green'), label: 'Total earnings (₹ lakh)' }, { vals: V.total_cost_rs_lakh, color: css('--ink'), label: 'Total cost (₹ lakh)' }],
+      { bars: [{ vals: V.profit_loss_rs_lakh, label: 'Profit / loss (₹ lakh)', colorOf: v => v < 0 ? css('--red') : css('--green'), note: Y.map(y => flagOf['profit_loss_rs_lakh|' + y] ? `as printed; earnings − cost = ${fnum(flagOf['profit_loss_rs_lakh|' + y].earnings_minus_cost)}` : '') }], labelEvery: 4, h: 280 });
+    const iL = Y.length - 1, lossYears = V.profit_loss_rs_lakh.filter(v => v < 0).length;
+    $('cap-gl-money').innerHTML = `${Y[0]} to ${Y[iL]}: earnings rose from ₹${fnum(V.total_earnings_rs_lakh[0])} lakh to ₹${fnum(V.total_earnings_rs_lakh[iL])} lakh, cost from ₹${fnum(V.total_cost_rs_lakh[0])} lakh to ₹${fnum(V.total_cost_rs_lakh[iL])} lakh. A loss in ${lossYears} of ${Y.length} years; ${Y[iL]}: ₹${fnum(-V.profit_loss_rs_lakh[iL])} lakh (₹${fnum(-V.profit_loss_rs_lakh[iL] / 100)} crore). Not adjusted for inflation.`;
+    const sel = $('gl-ind'), keys = Object.keys(G.labels);
+    sel.innerHTML = keys.map(k => `<option value="${k}">${esc(G.labels[k])}</option>`).join('');
+    sel.value = 'operational_fleet';
+    const draw = () => {
+      const k = sel.value, v = V[k];
+      catChart($('c-gl'), Y, [], { bars: [{ vals: v, label: G.labels[k], color: css('--red'), colorOf: (x, i) => flagOf[k + '|' + Y[i]] ? css('--amber') : (x < 0 ? css('--red') : css('--blue')), note: Y.map(y => flagOf[k + '|' + y] ? `as printed; computed ${fnum(flagOf[k + '|' + y].computed ?? flagOf[k + '|' + y].earnings_minus_cost)}` : '') }], labelEvery: 4, h: 240 });
+      const miss = Y.filter((y, i) => v[i] == null), fl = (G.flags || []).filter(f => f.item === k), cf = (G.conflicts || []).filter(c => c.item === k);
+      $('gl-hint').textContent = `${Y[0]} – ${Y[iL]}`;
+      $('cap-gl').innerHTML = (miss.length ? `Blank in the reports: ${miss.join(', ')}. ` : 'Every year present. ')
+        + (fl.length ? `<span class="flag">Amber</span>: as printed but fails an arithmetic check (${fl.map(f => `${f.year}: ${fnum(f.published)} printed, ${fnum(f.computed ?? f.earnings_minus_cost)} computed`).join('; ')}). ` : '')
+        + (cf.length ? `Reports disagree on ${cf.map(c => `${c.year} (${[...new Set(c.published.map(p => fnum(p[0])))].join(' / ')}; used ${fnum(c.used)}, ${c.why})`).join('; ')}.` : '');
+    };
+    sel.onchange = draw; draw();
+    $('t-gl').innerHTML = `<tr><th>Year</th>${keys.map(k => `<th class="n">${esc(G.labels[k])}</th>`).join('')}</tr>`
+      + Y.map((y, i) => `<tr><td>${y}</td>${keys.map(k => `<td class="n${flagOf[k + '|' + y] ? ' flag' : ''}">${fnum(V[k][i])}</td>`).join('')}</tr>`).reverse().join('');
+    $('cap-gl-t').textContent = `Each report reprints this table; where reports differ, the figure most of them give is used (for profit/loss, the one whose sign matches earnings − cost). Red: fails an arithmetic check, shown as printed. The 2023-24 report prints the table as an image; the 2024-25 report covers its years.`;
+  }
+  const L = R.lines;
+  if (!L) return;
+  const Y = L.years, SER = L.series, P = L.parts;
+  const full = SER.filter(s => s.v.every(v => v != null)).length;
+  $('rp-sub').innerHTML = `Every figure in MTC's ${Y.length} annual reports from ${Y[0]} to ${Y[Y.length - 1]} (<a href="https://mtcbus.tn.gov.in/Home/AnnualReport">mtcbus.tn.gov.in/Home/AnnualReport</a>), read line by line and lined up across the years: <b>${fnum(SER.length)}</b> series, ${fnum(full)} with every year — the select indicators (fleet, routes, trips lost, fuel, tyres, staff, accidents, accident-free days, workshop output…), balance sheet, profit and loss, cash flow, every note to the accounts and the policy notes (actuarial valuations, loans, accident claims). Rupee figures are in lakh unless the label says otherwise.`;
+  // where the money goes
+  const find = (part, re) => SER.find(s => s.part === part && re.test(s.label) && s.v.filter(v => v != null).length >= 8);
+  const cost = [['Employee benefits', /Employee Benefits/i, '--purple'], ['Materials (diesel, spares, tyres)', /Cost of materials/i, '--amber'], ['Finance costs (interest)', /Finance Costs/i, '--red'], ['Depreciation', /Depreciation/i, '--faint'], ['Other expenses', /^Other Expenses/i, '--blue']]
+    .map(([lab, re, col]) => ({ s: find('profit_and_loss', re), lab, col })).filter(x => x.s);
+  const rev = find('profit_and_loss', /REVENUE FROM OPERATIONS/i);
+  if (cost.length) {
+    $('lg-rp-cost').innerHTML = cost.map(c => `<span><i style="background:var(${c.col})"></i>${c.lab}</span>`).join('') + (rev ? `<span><i style="background:var(--green)"></i>Revenue from operations</span>` : '');
+    stackChart($('c-rp-cost'), Y, cost.map(c => ({ vals: c.s.v, color: css(c.col), label: c.lab })), rev ? { vals: rev.v, color: css('--green'), label: 'Revenue from operations' } : null);
+    const i = Y.length - 1, tc = cost.reduce((a, c) => a + (c.s.v[i] || 0), 0), emp = cost[0].s.v[i];
+    $('cap-rp-cost').innerHTML = `Where the money goes, from the statement of profit and loss (₹ lakh). ${Y[i]}: cost ₹${fnum(tc)} lakh, of which staff ${(100 * emp / tc).toFixed(0)}%; revenue from operations ₹${fnum(rev?.v[i])} lakh covered ${(100 * (rev?.v[i] || 0) / tc).toFixed(0)}% of it.`;
+  }
+  // the explorer
+  const ps = [...new Set(SER.map(s => s.part))];
+  $('rp-part').innerHTML = `<option value="">All parts</option>` + ps.map(p => `<option value="${p}">${esc(P[p] || p)} (${SER.filter(s => s.part === p).length})</option>`).join('');
+  let open = null;
+  const render = () => {
+    const q = $('rp-q').value.trim().toLowerCase(), pt = $('rp-part').value, fo = $('rp-full').checked;
+    const words = q.split(/\s+/).filter(Boolean);
+    const rows = SER.map((s, i) => [s, i]).filter(([s]) => (!pt || s.part === pt) && (!fo || s.v.every(v => v != null))
+      && words.every(w => (s.label + ' ' + s.note + ' ' + (P[s.part] || '')).toLowerCase().includes(w)));
+    $('rp-count').textContent = `${fnum(rows.length)} series` + (rows.length > 400 ? ' (first 400 shown; search to narrow)' : '');
+    $('t-rp').innerHTML = `<tr><th>Item</th><th>${shortY(Y[0])} → ${shortY(Y[Y.length - 1])}</th><th class="n">${Y[Y.length - 1]}</th><th class="n">Years</th></tr>`
+      + rows.slice(0, 400).map(([s, i]) => {
+        const last = [...s.v].reverse().find(v => v != null), ny = s.v.filter(v => v != null).length;
+        return `<tr class="row" data-i="${i}"><td>${esc(s.label)}${s.restated ? ' <span title="a later report restated some years">↻</span>' : ''}<div class="rnote">${esc(P[s.part] || s.part)}${s.note ? ' · ' + esc(s.note.toLowerCase()) : ''}</div></td><td class="sp">${spark(s.v)}</td><td class="n">${s.v[s.v.length - 1] == null ? '<span class="part">' + fnum(last) + '</span>' : fnum(last)}</td><td class="n">${ny}</td></tr>`
+          + (open === i ? `<tr class="det"><td colspan="4"><svg class="chart" id="c-rp-one"></svg><div class="scroll"><table><tr>${Y.map(y => `<th class="n">${shortY(y)}</th>`).join('')}</tr><tr>${s.v.map((v, k) => `<td class="n" title="${esc(s.src[k] || '')}">${fnum(v)}</td>`).join('')}</tr><tr>${s.src.map(x => `<td class="n" style="font-size:10.5px;color:var(--faint)">${x ? esc(x.replace(/^MTC_(\d+\w\w)_ANNUAL_REPORT_/, '$1 ').replace('.pdf', '')) : ''}</td>`).join('')}</tr></table></div></td></tr>` : '');
+      }).join('');
+    if (open != null && $('c-rp-one')) { const s = SER[open]; catChart($('c-rp-one'), Y, [], { bars: [{ vals: s.v, label: s.label, colorOf: v => v < 0 ? css('--red') : css('--blue') }], h: 200 }); }
+  };
+  $('t-rp').addEventListener('click', e => { const tr = e.target.closest('tr.row'); if (!tr) return; const i = +tr.dataset.i; open = open === i ? null : i; render(); });
+  ['rp-q', 'rp-part', 'rp-full'].forEach(id => $(id).addEventListener('input', () => { open = null; render(); }));
+  render();
+  // multi-column tables, loaded when opened
+  let T = null;
+  $('rp-tables-card').addEventListener('toggle', () => {
+    if (!$('rp-tables-card').open || T) return;
+    fetch('reports_tables.json?t=' + Math.floor(Date.now() / 3600000)).then(r => r.json()).then(t => {
+      T = t; const reps = Object.keys(T).sort().reverse();
+      $('rp-rep').innerHTML = reps.map(r => `<option value="${r}">${esc(r.replace(/^MTC_(\d+\w\w)_ANNUAL_REPORT_/, '$1 report, ').replace('.pdf', ''))} (${T[r].length} rows)</option>`).join('');
+      const show = () => { const q = $('rp-tq').value.trim().toLowerCase(); $('t-rp-tables').innerHTML = '<tr><th>Page</th><th>Part</th><th>Row</th><th>Figures (as printed, left to right)</th></tr>' + T[$('rp-rep').value].filter(r => !q || (r[3] + ' ' + r[2]).toLowerCase().includes(q)).map(r => `<tr><td class="n">${r[0]}</td><td>${esc(P[r[1]] || r[1])}${r[2] ? '<div class="rnote">' + esc(r[2].toLowerCase()) + '</div>' : ''}</td><td style="white-space:normal;min-width:220px">${esc(r[3])}</td><td>${r[4].map(fnum).join(' · ')}</td></tr>`).join(''); };
+      $('rp-rep').onchange = show; $('rp-tq').oninput = show; show();
+    });
+  });
+}).catch(e => { $('rp-sub').textContent = 'Could not load the annual-report data.'; console.error(e); });
 </script>
 </body>
 </html>
