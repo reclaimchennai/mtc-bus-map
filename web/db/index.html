@@ -61,6 +61,11 @@
   th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); font-weight: 700; padding: 6px 8px; border-bottom: 1px solid var(--hair); }
   td { padding: 7px 8px; border-bottom: 1px solid var(--hair); vertical-align: top; }
   td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  th.n { text-align: right; }
+  #t-rc-year { max-width: 620px; }
+  .chart .seg { transition: opacity .15s; }
+  .chart .col:hover .seg { opacity: .85; }
+  .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
   .tag { display: inline-block; background: var(--blue); color: #fff; font-weight: 700; font-size: 11px; padding: 1px 6px; border-radius: 5px; margin: 0 3px 2px 0; }
   .scroll { overflow-x: auto; }
   #map { height: 430px; border-radius: 14px; overflow: hidden; border: 1px solid var(--hair); }
@@ -107,9 +112,21 @@
 
   <section>
     <h2>On the road</h2>
-    <p class="sub">Distinct buses reporting their position, by hour of the day, averaged over the days collected. Electric and AC buses are part of the total.</p>
-    <div class="card"><div class="legend"><span><i style="background:var(--faint)"></i>All buses</span><span><i style="background:var(--purple)"></i>Electric</span><span><i style="background:var(--blue)"></i>AC</span></div>
-      <svg class="chart" id="c-fleet"></svg><div class="cap" id="cap-fleet"></div></div>
+    <p class="sub">Distinct buses reporting their position in each hour, stacked by MTC's own service type, averaged over the days collected. <b>On a trip</b>: buses MTC's system has on a trip in that hour. <b>No trip</b>: buses it tracks with no trip at all in the hour (drawn as ghosts on the live map). Every AC bus MTC runs is electric.</p>
+    <div class="card">
+      <div class="tabs" id="fleet-mode"><button data-m="reporting" class="on">Reporting GPS</button><button data-m="on_trip">On a trip</button><button data-m="no_trip">No trip</button></div>
+      <div class="legend" id="fleet-legend"></div>
+      <svg class="chart" id="c-fleet" role="img" aria-label="Stacked bars: buses on the road by hour and MTC service type"></svg><div class="cap" id="cap-fleet"></div>
+      <details><summary>Table view</summary><div class="scroll"><table id="t-fleet"></table></div></details></div>
+  </section>
+
+  <section>
+    <h2>Buses with no trip</h2>
+    <p class="sub" id="ghost-sub"></p>
+    <div class="grid2">
+      <div class="card scroll"><table id="t-ghost-where"></table><div class="cap" id="cap-ghost-where"></div></div>
+      <div class="card scroll"><table id="t-ghost-buses"></table><div class="cap">Hours in the days collected with GPS but no trip at all, against hours with one. Tap a bus for its history.</div></div>
+    </div>
   </section>
 
   <section>
@@ -289,6 +306,46 @@ function hourBars(svg, series, { h = 200, unit = '', max, W = 720 } = {}) {
   }));
   for (let hr = 0; hr < 24; hr += 3) svg.append(S('text', { x: m.l + hr * bw + bw / 2, y: h - 6, 'text-anchor': 'middle' }, H2(hr)));
 }
+/* stacked columns by hour, as on the TGSRTC dashboard: rows[24] of per-group counts (null = hour not collected) */
+const TCOL = { ordinary: '#d9468f', lf: '#6b3fc2', deluxe: '#e8772e', express: '#d4b106', small: '#6f8a3c', ladies: '#f490b8', devl: '#2f6fd6', acev: '#e2343c', premium: '#a8823a' };
+function stacked(svg, rows, groups, { W = 720, h = 280 } = {}) {
+  W = svg.clientWidth > 0 && svg.clientWidth < 560 ? 420 : W; h = W < 560 ? 260 : h;
+  const m = { l: 40, r: 6, t: 18, b: 22 };
+  svg.setAttribute('viewBox', `0 0 ${W} ${h}`); svg.innerHTML = '';
+  const tots = rows.map(r => r ? r.reduce((a, b) => a + b, 0) : null);
+  const raw = Math.max(1, ...tots.filter(v => v != null));
+  const step = [1, 2, 5].flatMap(k => [k, k * 10, k * 100, k * 1000, k * 10000]).sort((a, b) => a - b).find(s => raw / s <= 4.5);
+  const top = Math.ceil(raw * 1.06 / step) * step;
+  const y = v => m.t + (h - m.t - m.b) * (1 - v / top), base = h - m.b;
+  const slot = (W - m.l - m.r) / 24, bw = Math.min(24, slot * 0.72);
+  for (let v = 0; v <= top; v += step) {
+    svg.append(S('line', { x1: m.l, x2: W - m.r, y1: y(v), y2: y(v), class: 'grid-line' }));
+    svg.append(S('text', { x: m.l - 6, y: y(v) + 3.5, 'text-anchor': 'end' }, v.toLocaleString('en-IN')));
+  }
+  const best = tots.indexOf(Math.max(...tots.filter(v => v != null)));
+  rows.forEach((r, hr) => {
+    const x = m.l + hr * slot + (slot - bw) / 2, g = S('g', { class: 'col' });
+    if (!r) g.append(S('rect', { x, y: base - 2, width: bw, height: 2, fill: css('--hair') }));
+    else {
+      let acc = 0; const segs = r.map((v, i) => [v, i]).filter(([v]) => v > 0);
+      segs.forEach(([v, i], k) => {
+        const y0 = y(acc), y1 = y(acc + v); acc += v;
+        const hh = Math.max(0, y0 - y1 - (k ? 1.5 : 0)); if (hh <= 0) return;
+        if (k === segs.length - 1) {          // top segment: rounded end
+          const rr = Math.min(4, hh, bw / 2), yt = y1, yb = y1 + hh;
+          g.append(S('path', { class: 'seg', fill: TCOL[groups[i][0]], d: `M${x} ${yb}V${yt + rr}Q${x} ${yt} ${x + rr} ${yt}H${x + bw - rr}Q${x + bw} ${yt} ${x + bw} ${yt + rr}V${yb}Z` }));
+        } else g.append(S('rect', { class: 'seg', x, y: y1, width: bw, height: hh, fill: TCOL[groups[i][0]] }));
+      });
+      if (hr === best) svg.append(S('text', { x: x + bw / 2, y: y(tots[hr]) - 6, 'text-anchor': 'middle', style: 'font-weight:700;fill:var(--ink)' }, fmt(tots[hr])));
+    }
+    const hit = S('rect', { x: m.l + hr * slot, y: m.t, width: slot, height: base - m.t, fill: 'transparent' });
+    g.append(hit); svg.append(g);
+    hover(hit, r ? `<b>${H2(hr)}:00–${H2((hr + 1) % 24)}:00 · ${fmt(tots[hr])} buses</b><br>` + groups.map((gr, i) => [gr, i]).filter(([, i]) => r[i]).reverse()
+      .map(([gr, i]) => `<i class="sw" style="background:${TCOL[gr[0]]}"></i>${gr[1]}: ${fmt(r[i])}`).join('<br>') : `${H2(hr)}:00 · not yet collected`);
+  });
+  svg.append(S('line', { x1: m.l, x2: W - m.r, y1: base, y2: base, stroke: css('--faint'), 'stroke-opacity': .5 }));
+  for (let hr = 0; hr < 24; hr += (W < 560 ? 3 : 2)) svg.append(S('text', { x: m.l + hr * slot + slot / 2, y: h - 6, 'text-anchor': 'middle' }, H2(hr)));
+}
 function lineByHour(svg, vals, { h = 200, color = css('--red'), unit = 'km/h', min = 0, W = 720 } = {}) {
   const m = { l: 34, r: 8, t: 12, b: 22 };
   svg.setAttribute('viewBox', `0 0 ${W} ${h}`); svg.innerHTML = '';
@@ -321,13 +378,39 @@ fetch('data.json?t=' + Math.floor(Date.now() / 600000)).then(r => r.json()).then
     [SP.median + ' km/h', 'median bus speed'], [(100 * B.total_bunched / Math.max(1, B.total_pairs)).toFixed(1) + '%', 'of moving bus pairs bunched'], [fmt(cov.routes), 'workings seen running']];
   $('kpis').innerHTML = kp.map(([b, s]) => `<div class="kpi"><b>${b}</b><span>${s}</span></div>`).join('');
 
-  const F = D.fleet_by_hour;
-  hourBars($('c-fleet'), [
-    { vals: F.map(f => f[0] || null), color: css('--faint'), label: 'All buses', opacity: .55 },
-    { vals: F.map(f => f[2] || null), color: css('--blue'), label: 'AC', slot: 1 },
-    { vals: F.map(f => f[1] || null), color: css('--purple'), label: 'Electric', slot: 2 }]);
-  const gaps = F.map((f, h) => f[0] ? null : H2(h)).filter(Boolean);
-  $('cap-fleet').textContent = gaps.length ? `Hours not yet collected: ${gaps.join(', ')}. The archive grows every day and this fills in.` : '';
+  const F = D.fleet_by_hour, G = D.types || [], FT = D.fleet_by_type;
+  if (FT) {
+    // legend in stack order, largest type first in the table
+    $('fleet-legend').innerHTML = G.map(g => `<span><i style="background:${TCOL[g[0]]}"></i>${g[1]}</span>`).join('');
+    let fmode = 'reporting';
+    const drawFleet = () => {
+      const rows = FT[fmode];
+      stacked($('c-fleet'), rows, G);
+      const gaps = rows.map((r, h) => r ? null : H2(h)).filter(Boolean);
+      $('cap-fleet').textContent = gaps.length ? `Hours not yet collected: ${gaps.join(', ')}. The archive grows every day and this fills in.` : '';
+      $('t-fleet').innerHTML = `<tr><th>Hour</th>${G.map(g => `<th class="n">${g[1]}</th>`).join('')}<th class="n">All</th></tr>`
+        + rows.map((r, h) => r ? `<tr><td>${H2(h)}:00</td>${r.map(v => `<td class="n">${fmt(v)}</td>`).join('')}<td class="n"><b>${fmt(r.reduce((a, b) => a + b, 0))}</b></td></tr>` : '').join('');
+    };
+    drawFleet();
+    addEventListener('resize', () => { clearTimeout(drawFleet.t); drawFleet.t = setTimeout(drawFleet, 150); });
+    document.querySelectorAll('#fleet-mode button').forEach(b => b.addEventListener('click', () => {
+      document.querySelectorAll('#fleet-mode button').forEach(x => x.classList.toggle('on', x === b)); fmode = b.dataset.m; drawFleet();
+    }));
+  }
+  const GH = D.ghost;
+  if (GH) {
+    const tname = Object.fromEntries(G);
+    $('ghost-sub').innerHTML = `MTC's tracking reports some buses with a position but no trip: its own Track a Bus shows them going from "N/A" to "N/A". `
+      + `Over the days collected <b>${fmt(GH.buses_ever)}</b> buses spent at least one hour like this, and <b>${(100 * GH.share_of_fixes).toFixed(1)}%</b> of all GPS fixes had no trip. `
+      + `In the last ${GH.rule.now_min} minutes of the archive, <b>${fmt(GH.now)}</b> buses had no trip, ${fmt(GH.now_at_terminus)} of them standing at a terminus.`;
+    $('t-ghost-where').innerHTML = '<tr><th>Where buses with no trip stand now</th><th class="n">Buses</th></tr>'
+      + (GH.now_places.length ? GH.now_places.map(p => `<tr><td>${esc(p[0])}</td><td class="n"><b>${fmt(p[1])}</b></td></tr>`).join('') : '<tr><td colspan="2">None at a terminus right now.</td></tr>')
+      + (GH.now - GH.now_at_terminus > 0 ? `<tr><td><i>Away from any terminus</i></td><td class="n"><b>${fmt(GH.now - GH.now_at_terminus)}</b></td></tr>` : '');
+    $('cap-ghost-where').textContent = `A bus counts as at a terminus within ${GH.rule.terminus_m} m of the first or last stop of any route.`;
+    $('t-ghost-buses').innerHTML = '<tr><th>Bus</th><th>Type</th><th class="n">Hours, no trip</th><th class="n">On a trip</th></tr>'
+      + GH.most_hours.map(b => `<tr><td><a href="#bus=${esc(b[0])}" data-bus="${esc(b[0])}"><b>${esc(b[0])}</b></a></td><td><i class="sw" style="background:${TCOL[b[1]]}"></i>${esc(tname[b[1]] || b[1])}</td><td class="n"><b>${fmt(b[2])}</b></td><td class="n">${fmt(b[3])}</td></tr>`).join('');
+    $('t-ghost-buses').addEventListener('click', e => { const a = e.target.closest('a[data-bus]'); if (!a) return; e.preventDefault(); showBus(a.dataset.bus); $('busq').scrollIntoView({ behavior: 'smooth' }); });
+  }
 
   lineByHour($('c-speed'), SP.city_by_hour, { W: 420, h: 230 });
   plainBars($('c-hist'), SP.hist_4kmh.map((_, i) => `${i * 4}`), SP.hist_4kmh, { labelEvery: 2, fmtv: v => fmt(v) + ' passes', W: 420, h: 230 });
@@ -420,8 +503,9 @@ fetch('data.json?t=' + Math.floor(Date.now() / 600000)).then(r => r.json()).then
 const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const dlab = d => +d.slice(8) + ' ' + MON[+d.slice(5, 7) - 1];
-const TYPE = { a: 'AC', e: 'Electric', l: 'Low floor', x: 'Express', p: 'Premium' };
-const ftype = f => f ? [...f].map(c => TYPE[c]).filter(Boolean).join(' · ') : 'Ordinary';
+const TNAME = { ordinary: 'Ordinary', lf: 'Low floor', deluxe: 'Deluxe', express: 'Express', small: 'Small bus', ladies: 'Ladies only', devl: 'Electric', acev: 'Electric AC', premium: 'Premium' };
+const stOf = (fl = '') => fl.includes('p') ? 'premium' : fl.includes('e') ? (fl.includes('a') ? 'acev' : 'devl') : fl.includes('s') ? 'small' : fl.includes('w') ? 'ladies' : fl.includes('l') ? 'lf' : fl.includes('d') ? 'deluxe' : fl.includes('x') ? 'express' : 'ordinary';
+const ftype = f => TNAME[stOf(f || '')];
 let BI = null, partial = new Set();
 function dayBars(svg, rows, { h = 230, W = 720 } = {}) {
   const m = { l: 34, r: 8, t: 18, b: 22 }, n = rows.length, bw = (W - m.l - m.r) / Math.max(n, 1);
