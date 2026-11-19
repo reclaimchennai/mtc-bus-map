@@ -65,9 +65,7 @@ def main():
             with lock:                                  # shared rate limit across workers
                 t = max(time.monotonic(), nxt[0]); nxt[0] = t + gap
             time.sleep(max(0, t - time.monotonic()))
-            body = {'fromStationCode': s0, 'toStationCode': s1, 'quantity': 1}
-            if route:                                   # metro interchange journeys have no single route
-                body['routeCode'] = route
+            body = {'fromStationCode': s0, 'toStationCode': s1, 'quantity': 1, 'routeCode': route}
             c, j = api(f'/frfs/search?vehicleType="{vt}"&integratedBppConfigId={ibc}&', body)
             with lock:
                 if c in (401, 403):

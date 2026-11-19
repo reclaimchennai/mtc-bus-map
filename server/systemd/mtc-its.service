@@ -1,0 +1,18 @@
+[Unit]
+Description=MTC live buses from MTC's own commuter site (mtcbusits), adaptive per-direction polling -> mapsv2/live/vehicles.json + archive
+After=network-online.target
+Wants=network-online.target
+Conflicts=mtc-live.service mtc-chalo.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/mtc-live
+ExecStart=/usr/bin/python3 mtcits_collector.py --stops %h/projects/maps-site/mapsv2/data/route_stops.json --timings %h/projects/maps-site/mapsv2/data/timings.json --stop-dist %h/projects/maps-site/mapsv2/data/stop_dist.json --archive %h/projects/mtc-live/archive --out %h/projects/maps-site/mapsv2/live/vehicles.json --rate 8 --workers 8 --chalo-routes %h/projects/mtc-live/chalo_routes.json --chalo-raw %h/projects/mtc-live/chalo_raw.json --watch %h/projects/mtc-live/reports/watch.json --model %h/projects/maps-site/mapsv2/live/model.json
+Restart=always
+RestartSec=60
+Nice=5
+StandardOutput=append:%h/projects/mtc-live/logs/its.log
+StandardError=append:%h/projects/mtc-live/logs/its.log
+
+[Install]
+WantedBy=default.target

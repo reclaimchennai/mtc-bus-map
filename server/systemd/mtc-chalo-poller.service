@@ -1,0 +1,17 @@
+[Unit]
+Description=Chalo's live MTC bus positions in a process of their own (chalo_poller.py) -> mtc-live/chalo_raw.json, merged by mtc-its
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/mtc-live
+ExecStart=/usr/bin/python3 chalo_poller.py --routes %h/projects/mtc-live/chalo_routes.json --out %h/projects/mtc-live/chalo_raw.json --rate 6 --workers 6 --watch %h/projects/mtc-live/reports/watch.json --feed %h/projects/maps-site/mapsv2/live/vehicles.json
+Restart=always
+RestartSec=60
+Nice=5
+StandardOutput=append:%h/projects/mtc-live/logs/chalo.log
+StandardError=append:%h/projects/mtc-live/logs/chalo.log
+
+[Install]
+WantedBy=default.target

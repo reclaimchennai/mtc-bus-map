@@ -18,371 +18,54 @@
   <meta name="twitter:description" content="Every Chennai MTC bus route and stop, every live bus moving on the map, the next bus at every stop, real road speeds and fares.">
   <meta name="twitter:image" content="https://mtc.reclaimchennai.city/og/site.png">
   <meta name="description" content="A vector-map explorer for every Chennai MTC bus route and stop — tap a stop for the buses that pass, tap a route to trace it, with live route numbers along the lines.">
-  <link rel="icon" href="../mtc/favicon.svg">
+  <link rel="icon" href="pwa/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="pwa/apple-touch-icon.png">
+  <meta name="theme-color" content="#f01b48">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="MTC Buses">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css">
   <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-  <style>
-    :root {
-      --cream:#f9f5ed; --ink:#1c1c1e; --muted:#8a8a8e; --line:#e7e2d6;
-      --red:#f01b48; --teal:#00454d;
-      --c-route:#2563eb; --c-small:#16a34a; --c-feeder:#db2777;
-      --panel:rgba(255,255,255,.82);
-      /* one material, used by every floating surface: a translucent scrim that
-         the heavy backdrop blur sits behind, plus the hairline + shadow pair
-         that gives it an edge without a hard border */
-      --glass:linear-gradient(180deg, rgba(255,255,255,.90), rgba(255,255,255,.78));
-      --glass-inner:rgba(255,255,255,.62);
-      --hair:rgba(255,255,255,.80);
-      --lift:0 1px 0 rgba(255,255,255,.9) inset,
-             0 12px 40px -8px rgba(40,34,22,.28),
-             0 2px 10px -2px rgba(40,34,22,.14);
-    }
-    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
-    html, body { margin: 0; height: 100%; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--ink); background: var(--cream); }
-    #map { position: fixed; inset: 0; background: var(--cream); }
-    .maplibregl-canvas { outline: 0; }
-
-    /* One control stack, top-left: the bus badge (home) and, under it, search.
-       The search surface used to be a permanent 350px sidebar that covered the
-       western third of the city on every screen. It is now summoned from here
-       and rolls away again, so the default state of the page is the map. */
-    #fabs { position: fixed; z-index: 600; top: calc(12px + env(safe-area-inset-top));
-      left: calc(12px + env(safe-area-inset-left)); display: flex; flex-direction: column; gap: 8px; }
-    #logo, #search-fab { width: 46px; height: 46px; border-radius: 14px; background: var(--red);
-      color: #fff; display: grid; place-items: center; border: 0; padding: 0; cursor: pointer;
-      box-shadow: 0 2px 10px rgba(0,0,0,.20); text-decoration: none;
-      transition: transform .16s ease, background .18s ease, color .18s ease; }
-    #logo:active, #search-fab:active { transform: scale(.93); }
-    #logo svg { width: 34px; height: 34px; } #search-fab svg { width: 19px; height: 19px; }
-    body.search-open #search-fab { background: #fff; color: var(--red); }
-
-    /* Rolls out from under the search button: scaled down and clipped to nothing
-       at the top-left corner, then unrolled. Sized to its content rather than
-       to the viewport, so it never becomes a wall down the side of the map. */
-    #panel { position: fixed; z-index: 590; display: flex; flex-direction: column;
-      background: linear-gradient(180deg, rgba(255,255,255,.97), rgba(255,255,255,.94));
-      -webkit-backdrop-filter: blur(24px) saturate(180%); backdrop-filter: blur(24px) saturate(180%);
-      border: 0.5px solid var(--hair); box-shadow: var(--lift); border-radius: 18px;
-      overflow: hidden; transform-origin: 0 0; opacity: 0; pointer-events: none;
-      transform: translate(-8px, -10px) scale(.90);
-      transition: transform .34s cubic-bezier(.32,.72,0,1), opacity .2s ease; }
-    body.search-open #panel { opacity: 1; pointer-events: auto; transform: none; }
-    @media (min-width: 700px) {
-      /* beside the control stack, not under it: at 70px down the search button
-         itself sat on top of the card's own title */
-      #panel { top: calc(12px + env(safe-area-inset-top)); left: calc(70px + env(safe-area-inset-left));
-        width: 342px; max-height: calc(100vh - 24px);
-        transform-origin: 0 54px; transform: translateX(-10px) scale(.92); }
-    }
-    @media (max-width: 699px) {
-      /* the same idea, unrolling up from the bottom where a thumb can reach it */
-      /* --kb / --vvh (set from visualViewport in app.js) keep it above the on-screen
-         keyboard: lifted by the keyboard's height and no taller than what is left */
-      #panel { left: 8px; right: 8px; bottom: calc(8px + env(safe-area-inset-bottom) + var(--kb, 0px)); top: auto;
-        max-height: min(62vh, calc(var(--vvh, 100vh) - 132px)); transform-origin: 50% 100%; transform: translateY(16px) scale(.97);
-        transition: transform .34s cubic-bezier(.32,.72,0,1), opacity .2s ease, bottom .18s ease, max-height .18s ease; }
-    }
-    #panel .ptop { padding: 12px; flex: 0 0 auto; -webkit-user-select: none; user-select: none; }
-    #panel h1 { margin: 0 0 10px; font-size: 15px; font-weight: 800; letter-spacing: -.01em;
-      min-height: 22px; display: flex; align-items: center; gap: 6px; }
-    #searchbox { position: relative; }
-    #q { width: 100%; height: 44px; border: 1px solid var(--line); border-radius: 12px; padding: 0 40px 0 14px; font-size: 15px; background: #fff; outline: none; color: var(--ink); }
-    #q:focus { border-color: var(--red); }
-    #searchbox .si { position: absolute; right: 13px; top: 13px; width: 18px; height: 18px; color: var(--muted); }
-    #results { overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1; }
-    #results .grp { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); padding: 12px 14px 5px; font-weight: 700; }
-    #results .it { padding: 10px 14px; cursor: pointer; border-top: 1px solid var(--line); font-size: 14px; display: flex; gap: 10px; align-items: center; }
-    /* let the destination text shrink/ellipsis instead of crushing the pill */
-    #results .it > span:not(.service-tag) { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12.5px; }
-    #results .it:hover { background: rgba(0,0,0,.035); }
-    #results .it .sub { color: var(--muted); font-size: 11.5px; margin-top: 2px; }
-    #results .hint { padding: 16px 14px; color: var(--muted); font-size: 13px; line-height: 1.55; }
-
-    /* Variant names ("21G (2)", "21GCT (8)") are wider than a bare route number.
-       The pill sits in a flex row, so without these it gets squeezed by its
-       sibling text and the label wraps inside a fixed-height box and clips. */
-    .service-tag { display: inline-flex; align-items: center; justify-content: center; min-width: 34px; min-height: 22px;
-      flex: 0 0 auto; white-space: nowrap; padding: 2px 8px; line-height: 1.15;
-      border-radius: 6px; background: var(--c-route); color: #fff; font-weight: 800; font-size: 12.5px; }
-    .service-tag .vsuffix { font-weight: 600; opacity: .82; margin-left: 3px; font-size: 11.5px; }
-    .service-tag.small { background: var(--c-small); } .service-tag.feeder { background: var(--c-feeder); }
-    .service-tag.premium { background: linear-gradient(180deg, #e0c27a, #b8892f); color: #121212; }
-
-    /* Layered translucency: a light scrim over a heavy blur, a hairline top
-       highlight and a soft ambient shadow — the material reads as glass over the
-       map rather than a flat sheet on top of it. */
-    #card { position: fixed; z-index: 595; display: none; flex-direction: column;
-      background: var(--glass);
-      -webkit-backdrop-filter: blur(30px) saturate(180%);
-      backdrop-filter: blur(30px) saturate(180%);
-      border: 0.5px solid var(--hair); box-shadow: var(--lift); }
-    #card.open { display: flex; animation: cardin .28s cubic-bezier(.32,.72,0,1); }
-    /* Collapsed: the header stays, the body is clipped away. max-height animates
-       where height:auto cannot, and the scroller is faded so its content does
-       not flash through during the transition. */
-    #card { transition: max-height .34s cubic-bezier(.32,.72,0,1); }
-    #card.min .cscroll { opacity: 0; pointer-events: none; }
-    #card .cscroll { transition: opacity .18s ease; }
-    #card .chead::after { content: ""; position: absolute; left: 15px; bottom: 4px;
-      width: 26px; height: 3px; border-radius: 2px; background: var(--muted);
-      opacity: 0; transition: opacity .2s ease; }
-    #card.min .chead::after { opacity: .45; }
-    @keyframes cardin { from { opacity: 0; transform: translateY(10px) scale(.985); } }
-    /* Docked right, clear of the city: Chennai sits on the west of the viewport
-       and the Bay of Bengal on the east, so the panel covers water, not streets. */
-    @media (min-width: 700px) {
-      #card { right: 16px; top: 120px; width: 372px;
-        max-height: calc(100vh - 136px); border-radius: 20px; }
-      #card.min { max-height: 78px; }
-    }
-    @media (max-width: 699px) {
-      #card { left: 0; right: 0; bottom: 0; max-height: 62vh; border-radius: 16px 16px 0 0; box-shadow: 0 -4px 24px rgba(0,0,0,.18); }
-      #card.min { max-height: 86px; }
-    }
-    #card .chead { padding: 14px 44px 11px 15px; position: relative; flex: 0 0 auto;
-      border-bottom: 0.5px solid rgba(0,0,0,.07);
-      cursor: pointer; -webkit-user-select: none; user-select: none; }
-    #card .chead:active { opacity: .8; }
-    @media (max-width:699px){ #card .chead::before{ content:""; position:absolute; top:6px; left:50%; transform:translateX(-50%); width:38px; height:4px; border-radius:2px; background:#cdc7b8; } }
-    #card .cclose { position: absolute; top: 12px; right: 12px; width: 30px; height: 30px; border-radius: 50%;
-      border: 0.5px solid rgba(0,0,0,.06); background: rgba(120,110,90,.10); color: #6b6355; font-size: 17px;
-      cursor: pointer; line-height: 1; -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
-      transition: background .15s ease, transform .15s ease; }
-    #card .cclose:hover { background: rgba(120,110,90,.18); }
-    #card .cclose:active { transform: scale(.92); }
-    /* Terminus names are long - "Thyagaraya Nagar Bus Terminus" alone is 29
-       characters - and one 17px line fitted about half of one. Origin and
-       destination now get a line each at a smaller size, each free to wrap
-       once more before the clamp cuts it with an ellipsis. */
-    #card h2 { margin: 0; font-size: 14px; font-weight: 800; display: flex; gap: 9px;
-      align-items: flex-start; line-height: 1.3; }
-    #card h2 > .service-tag { margin-top: 1px; }
-    #card h2 .ttl { min-width: 0; display: flex; flex-direction: column; gap: 1px; }
-    #card h2 .ttl > span { display: -webkit-box; -webkit-box-orient: vertical;
-      -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; overflow-wrap: anywhere; }
-    #card h2 .ttl .ar { color: var(--muted); margin-right: 4px; }
-    #card .csub { margin: 7px 0 0; font-size: 12.5px; color: var(--muted); } #card .csub b { color: var(--ink); font-weight: 700; }
-    #card .cscroll { overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 4px 14px 16px; flex: 1; }
-    #card .seclbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); font-weight: 700; margin: 14px 0 8px; }
-    .pillwrap { display: flex; flex-wrap: wrap; gap: 7px; } .pillwrap .service-tag { cursor: pointer; } .pillwrap .service-tag:active { transform: scale(.94); }
-    .wklist { border: 1px solid rgba(0,0,0,.06); border-radius: 12px; overflow: hidden; background: var(--glass-inner);
-      -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
-    .wklist .it { display: flex; gap: 10px; align-items: center; justify-content: space-between;
-      padding: 9px 11px; font-size: 12.5px; cursor: pointer; border-top: 1px solid rgba(0,0,0,.055); }
-    .wklist .it:first-child { border-top: 0; }
-    .wklist .it:hover { background: rgba(0,0,0,.035); }
-    .wklist .it.on { background: rgba(37,99,235,.10); font-weight: 700; }
-    /* Two lines rather than one hard truncation: "GUDUVANCHERI B.T -> THYAGARA…"
-       told a rider nothing about where the working actually ends. */
-    .wklist .it > span:first-child { min-width: 0; overflow: hidden; white-space: normal;
-      font-size: 12px; line-height: 1.32; display: -webkit-box; -webkit-box-orient: vertical;
-      -webkit-line-clamp: 2; line-clamp: 2; overflow-wrap: anywhere; }
-    .wklist .it { align-items: flex-start; }
-    .wklist .wkmeta { padding-top: 1px; }
-    .wkac { display: none; }
-    .wkac.on { display: inline-flex; vertical-align: -2px; width: 13px; height: 13px;
-      margin-right: 5px; color: #2b8cba; }
-    .wkac.on svg { width: 13px; height: 13px; }
-    .wklist .wkmeta { flex: 0 0 auto; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
-    /* Route diagram, busrouter.sg style: a rail per direction, joined by a U-turn
-       at the terminus, dotted links between paired stops, arrows for travel
-       direction. The rail line and its dots live in the SAME grid cell (.rl) and
-       are both centred in it — deriving rail x from the row centre instead put
-       them 14.5px apart, because the grid's column gaps shift the dot columns. */
-    .rail { --dot: 11px; --rail: 16px; --mid: 26px; --pad: 7px; margin-top: 2px; }
-    .rail .grid { display: grid; grid-template-columns: 1fr var(--rail) var(--mid) var(--rail) 1fr;
-      column-gap: 9px; align-items: center; }
-    .rail .hdr { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
-      color: var(--muted); margin: 2px 0 2px; align-items: end; }
-    .rail .hdr .l { text-align: right; } .rail .hdr .r { text-align: left; }
-
-    /* the rail cell: line and dot share one box, so they cannot drift apart */
-    .rail .rl { position: relative; align-self: stretch; display: grid; place-items: center; }
-    .rail .rl::before { content: ""; position: absolute; left: 50%;
-      top: calc(-1 * var(--pad)); bottom: calc(-1 * var(--pad));
-      transform: translateX(-50%); width: 2.5px; background: var(--red); }
-    .rail .rl.stop-end::before { bottom: 50%; }
-    .rail .rl.stop-start::before { top: 50%; }
-    .rail .dot { position: relative; z-index: 1; width: var(--dot); height: var(--dot);
-      border-radius: 50%; border: 2.5px solid var(--red); background: #fff; box-sizing: border-box; }
-    .rail li.term .dot { background: var(--red); }
-    .rail .dot.blank { border-color: #dcd6c8; }
-
-    /* terminus U-turn, spanning the two rail columns, with the terminus itself
-       as a dot at the top of the loop. Drawn twice: grey for the whole loop and
-       red over its left half, so only the outbound side is red. */
-    .rail { --back: #d4cec2; }
-    .rail .cap { grid-column: 2 / 5; height: 24px; position: relative; }
-    .rail .cap::before, .rail .cap::after { content: ""; position: absolute; left: 50%; transform: translateX(-50%);
-      width: calc(var(--rail) + var(--mid) + 18px - 2.5px); height: 20px; bottom: 0;
-      border: 2.5px solid var(--back); border-bottom: 0; border-radius: 999px 999px 0 0; }
-    .rail .cap::after { border-color: var(--red); clip-path: inset(0 50% 0 0); }
-    /* the same U-turn at the far terminus, so both ends read alike */
-    .rail .cap.btm::before, .rail .cap.btm::after { bottom: auto; top: 0; border: 2.5px solid var(--back);
-      border-top: 0; border-radius: 0 0 999px 999px; }
-    .rail .cap.btm::after { border-color: var(--red); }
-    .rail .capdot { position: absolute; z-index: 2; left: 50%; top: -4px; transform: translateX(-50%); width: 13px; height: 13px;
-      border-radius: 50%; background: var(--red); border: 2.5px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.08); box-sizing: border-box; }
-    .rail .cap.btm .capdot { top: auto; bottom: -4px; }
-    .rail .capname { grid-column: 1 / 6; text-align: center; font-size: 12.5px; font-weight: 800;
-      color: var(--ink); padding: 0 0 4px; cursor: pointer; }
-    .rail .capname:hover { color: var(--red); }
-    .rail .grid:last-child .capname { padding: 4px 0 0; }
-    /* the return leg is the other direction: grey like its stop names */
-    .rail li .rl:nth-of-type(4)::before { background: var(--back); }
-    .rail li .rl:nth-of-type(4) .dot { border-color: var(--back); }
-    .rail li .rl:nth-of-type(4) .arw.up { border-bottom-color: var(--back); }
-
-    /* One-way services: CUMTA publishes no return working for them, and drawing
-       an empty second rail with a U-turn cap into it implied a round trip that
-       does not exist. One straight line, names on the right. */
-    .rail.single .grid { grid-template-columns: var(--rail) 1fr; column-gap: 12px; }
-    .rail.single .lbl { text-align: left; }
-    .rail.single .hdr { margin-bottom: 6px; }
-
-    .rail ul { list-style: none; margin: 0; padding: 0; }
-    .rail li { padding: var(--pad) 0; cursor: pointer; border-radius: 8px; transition: background .12s ease; }
-    .rail li:hover { background: rgba(240,27,72,.06); }
-    .rail li:hover .lbl.l .nm { color: var(--red); }
-    .rail .link { height: 0; border-top: 1.5px dotted #8ab4f8; }
-    .rail .link.none { border-top-color: transparent; }
-
-    .rail .lbl { min-width: 0; }
-    .rail .lbl.l { text-align: right; }
-    .rail .lbl .nm { display: block; font-size: 12.5px; line-height: 1.32; letter-spacing: -.005em; }
-    .rail .lbl.r .nm { color: var(--muted); }
-    .rail li.term .lbl .nm { font-weight: 800; }
-    .rail .lbl .none { font-size: 12.5px; color: #cfc9bb; }
-
-    /* Travel direction, drawn as a solid arrowhead sitting ON the rail in the
-       gap between two stops — a disc big enough to read would collide with the
-       11px dots once rows tighten, so the triangle rides the line instead.
-       Same chevron idea as the map layer, so card and map agree. */
-    .rail .arw { position: absolute; z-index: 2; left: 50%; width: 0; height: 0; font-size: 0;
-      border-left: 6px solid transparent; border-right: 6px solid transparent;
-      /* a ring of white shadows, not one blur: the arrowhead is red on a red
-         rail, so it needs a hard outline to separate from the line it rides */
-      filter: drop-shadow(0 1px 0 #fff) drop-shadow(0 -1px 0 #fff)
-              drop-shadow(1px 0 0 #fff) drop-shadow(-1px 0 0 #fff); }
-    /* centred in the gap between two dots: the element is 9px tall and the gap
-       midpoint is the row boundary, so it sits 4.5px past the cell edge */
-    .rail .arw.dn { transform: translateX(-50%); bottom: calc(-1 * var(--pad) - 4.5px); border-top: 9px solid var(--red); }
-    .rail .arw.up { transform: translateX(-50%); top: calc(-1 * var(--pad) - 4.5px); border-bottom: 9px solid var(--red); }
-
-    .stopline { list-style: none; margin: 0; padding: 0; }
-    .stopline li { position: relative; padding: 8px 0 8px 22px; font-size: 13.5px; cursor: pointer; }
-    .stopline li:hover { color: var(--red); }
-    .stopline li::before { content:""; position: absolute; left: 5px; top: 0; bottom: 0; width: 2px; background: currentColor; opacity: .25; }
-    /* dot centred on the same x as the line: outer width 14px -> left = 6 - 7 */
-    .stopline li::after { content:""; position: absolute; left: -1px; top: 50%; transform: translateY(-50%); width: 10px; height: 10px; border-radius: 50%; background: #fff; border: 2px solid var(--red); }
-    /* terminus dot outer width 17px -> left = 6 - 8.5 */
-    .stopline li.term::after { width: 13px; height: 13px; left: -2.5px; background: var(--red); }
-    .stopline li.term { font-weight: 700; }
-    .stopline.coded li { padding-top: 6px; padding-bottom: 6px; }
-    .stopline li .code { display: block; font-size: 10px; color: var(--red); font-weight: 700; line-height: 1.2; }
-    .stopline li .nm { display: block; }
-    .dirhead b { color: var(--ink); } .dirgap { height: 6px; }
-
-    .timings-btn { width: 100%; background: var(--glass-inner); border: 1px solid rgba(0,0,0,.07); border-radius: 12px; padding: 11px; font-size: 13px;
-      -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
-      font-weight: 700; color: var(--ink); cursor: pointer; display: flex; gap: 7px; align-items: center; justify-content: center; margin-top: 8px;
-      transition: background .15s ease, border-color .15s ease, color .15s ease, transform .12s ease; }
-    .timings-btn:hover { background: rgba(255,255,255,.92); border-color: var(--red); color: var(--red); }
-    .timings-btn:active { transform: scale(.99); }
-    #timings-box:not(:empty) { margin: 8px 0 4px; background: var(--glass-inner); border: 1px solid rgba(0,0,0,.06); border-radius: 12px; padding: 4px 12px;
-      -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px); }
-    .trow { display: flex; justify-content: space-between; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 13.5px; }
-    .trow:last-child { border-bottom: 0; } .trow b { font-variant-numeric: tabular-nums; }
-
-    /* Board-type chips. AC is the only one that gets colour — it is the
-       distinction a rider is actually choosing between, and colouring all six
-       would turn the card into a paint chart. */
-    .tiers { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 0 2px;
-      border-top: 1px solid var(--line); }
-    .tier { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px;
-      font-weight: 600; padding: 4px 9px 4px 7px; border-radius: 999px;
-      border: 1px solid var(--line); background: rgba(255,255,255,.7); color: var(--ink); }
-    .tier svg { width: 13px; height: 13px; flex: 0 0 auto; opacity: .85; }
-    .tier b { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--muted);
-      font-size: 11px; }
-    .tier.ac { border-color: #7cc3e8; background: rgba(124,195,232,.16); color: #14607f; }
-    .tier.ac svg { opacity: 1; color: #2b8cba; }
-    .tier.ac b { color: #14607f; opacity: .7; }
-
-    /* departures-by-hour: 24 bars, so the shape of the working is visible at a
-       glance — an all-day service, a peak-only one, or the two clumps at either
-       end of the day that mark a depot run */
-    .hwrap { padding: 10px 0 4px; border-top: 1px solid var(--line); }
-    .hlbl { font-size: 10.5px; color: var(--muted); text-transform: uppercase;
-      letter-spacing: .05em; font-weight: 700; margin-bottom: 7px; }
-    .hlbl b { color: var(--red); text-transform: none; letter-spacing: 0; font-size: 11px; }
-    /* A 24-hour dial rather than a bar chart: midnight at the top, noon at the
-       bottom, each hour its own sector. A depot run reads instantly as two
-       wedges at opposite ends of the face. */
-    .dnclock { padding: 4px 0 0; text-align: center; }
-    .dn1 svg { width: 100%; max-width: 230px; height: auto; overflow: visible; }
-    .dn-face { fill: none; stroke: rgba(0,0,0,.08); stroke-dasharray: 2 3; }
-    .dn-tick { stroke: var(--muted); stroke-width: 1; opacity: .5; }
-    .dn-split { stroke: rgba(0,0,0,.14); stroke-width: 1; stroke-dasharray: 2 2; }
-    .dn-w { opacity: .92; } .dn-w.dy { fill: #e09400; } .dn-w.nt { fill: #3d33a0; }
-    .dn-w.z.dy { fill: #fbe7bd; opacity: .7; } .dn-w.z.nt { fill: #d9d6f4; opacity: .7; }
-    .dn-w:hover { opacity: 1; stroke: var(--ink); stroke-width: .8; }
-    .dn-num { fill: var(--muted); font-size: 9px; font-weight: 700; text-anchor: middle; }
-    .dn-hub { fill: #fff; stroke: #e8e2d4; stroke-width: 1.5; }
-    .dn-ic { fill: none; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-    .dn-ic.day { stroke: #e09400; } .dn-ic.night { stroke: #3d33a0; }
-    .dn-caps { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 2px; }
-    .dn-cap { font-size: 11.5px; color: var(--muted); line-height: 1.35; }
-    .dn-cap b { font-weight: 800; margin-right: 3px; } .dn-cap.day b { color: #e09400; } .dn-cap.night b { color: #3d33a0; }
-    .dn-cap span { display: block; color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
-    .dn-peak { text-align: center; font-size: 11.5px; color: var(--muted); padding: 8px 0 2px; }
-    .dn-peak b { color: var(--ink); font-variant-numeric: tabular-nums; }
-    .hclock { display: grid; place-items: center; padding: 2px 0 0; }
-    .hclock svg { width: 146px; height: 146px; overflow: visible; }
-    .hclock .seg { fill: var(--red); }
-    .hclock .seg.z { fill: #e7e2d6; }
-    .hclock .face { fill: none; stroke: rgba(0,0,0,.07); stroke-width: 1; }
-    .hclock .hr { fill: var(--muted); font-size: 8.5px; font-weight: 700;
-      text-anchor: middle; dominant-baseline: middle; font-variant-numeric: tabular-nums; }
-    .hclock .cn { fill: var(--ink); font-size: 15px; font-weight: 800; text-anchor: middle;
-      font-variant-numeric: tabular-nums; }
-    .hclock .cl { fill: var(--muted); font-size: 7.5px; font-weight: 700; text-anchor: middle;
-      letter-spacing: .1em; }
-    .tmsg { padding: 10px 0; color: var(--muted); font-size: 12.5px; line-height: 1.55; }
-
-    .mapbtns { position: fixed; z-index: 600; right: calc(12px + env(safe-area-inset-right)); top: calc(12px + env(safe-area-inset-top)); display: flex; flex-direction: column; gap: 8px; }
-    .mapbtn { width: 44px; height: 44px; border-radius: 14px; background: #fff; border: 0; box-shadow: 0 2px 10px rgba(0,0,0,.18); display: grid; place-items: center; cursor: pointer; color: #333; }
-    .mapbtn svg { width: 20px; height: 20px; }
-    #layer-menu { position: fixed; z-index: 601; right: calc(64px + env(safe-area-inset-right)); top: calc(12px + env(safe-area-inset-top)); background: #fff; border-radius: 12px; box-shadow: 0 8px 26px rgba(0,0,0,.2); padding: 7px; display: none; min-width: 176px; }
-    #layer-menu.open { display: block; }
-    #layer-menu button { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
-      background: none; border: 0; padding: 8px 11px; border-radius: 8px; font-size: 13px;
-      cursor: pointer; color: var(--muted); }
-    #layer-menu button:hover { background: #f1eee6; }
-    #layer-menu .lyr.on { color: var(--red); font-weight: 600; }
-    #layer-menu button svg { width: 16px; height: 16px; flex: 0 0 auto; opacity: .75; }
-    #layer-menu .lyr.on svg { opacity: 1; }
-    .pin-marker { filter: drop-shadow(0 1px 2px rgba(0,0,0,.4)); cursor: pointer; }
-    .maplibregl-ctrl-attrib { font-size: 10px; }
-    #loading { position: fixed; inset: 0; z-index: 700; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 16px;
-      background: var(--cream); color: var(--muted); font-size: 13px; transition: opacity .4s; }
-    #loading.done { opacity: 0; pointer-events: none; }
-    /* A Switch EiV22 - the red double-decker MTC put back on Chennai roads in
-       2023 - drawn on a 60x40 pixel grid. crispEdges keeps the pixels square at
-       any size; the wheels are octagons rather than circles so they stay in the
-       same idiom while they spin. */
-    #pxbus { width: 176px; height: 118px; shape-rendering: crispEdges; }
-    #pxbus .whl { transform-box: fill-box; transform-origin: 50% 50%;
-      animation: pxspin .5s linear infinite; }
-    #pxbus .body { transform-box: fill-box; animation: pxhop .34s steps(2, end) infinite alternate; }
-    #pxbus .road { animation: pxroad .5s linear infinite; }
-    @keyframes pxspin { to { transform: rotate(360deg); } }
-    @keyframes pxhop  { to { transform: translateY(-.7px); } }
-    @keyframes pxroad { to { transform: translateX(-12px); } }
-    @media (prefers-reduced-motion: reduce) {
-      #pxbus .whl, #pxbus .body, #pxbus .road { animation: none; }
-    }
+  <!-- one look for every bus network (Delhi is the reference): ../assets/busmap/ -->
+  <link rel="stylesheet" href="../assets/busmap/busmap.css?v=12">
+  <style>:root { --c-route:#2563eb; }  /* MTC's route tags stay blue */
+    /* the bus in 3D on its card (live.js hero3D) */
+    .lv-hero { position: relative; min-height: 150px; }
+    /* "Hide buses not on a trip": filled grey with white text while it is in force, as Accessible only is blue */
+    .lv-f.ng { border: 1px solid #e2ddd2; }
+    .lv-f.ng.on, #lv-strip .lv-drop .lv-f.ng.on { background: #6f6b63; color: #fff; border-color: #6f6b63; }
+    .lv-f.ng.on i { background: rgba(255,255,255,.3) !important; color: #fff; }
+    .lv-f.ng.on .lv-n, .lv-f.ng.on span { color: #fff !important; }
+    .lv-f.ng.on:hover { background: #5d5a53; }
+    /* folded bus card: the next stop on its last line (live.js miniNext) */
+    .lv-mnext { display: none; }
+    #card.min.lv-hasnext .lv-mnext { display: flex; align-items: center; gap: 7px; margin-top: 5px; font-size: 13px; font-weight: 600; color: #1c1c1e; min-width: 0; }
+    #card.min.lv-hasnext { max-height: 110px; }
+    @media (min-width:700px){ #card.min.lv-hasnext { max-height: 102px; } }
+    .lv-mnext > i { flex: none; width: 9px; height: 9px; border-radius: 50%; background: #9a958a; }
+    .lv-mtrack { overflow: hidden; white-space: nowrap; min-width: 0; flex: 1; mask-image: linear-gradient(90deg, #000 92%, transparent); -webkit-mask-image: linear-gradient(90deg, #000 92%, transparent); }
+    .lv-mtxt { display: inline-block; }
+    .lv-mtxt.scroll { animation: lv-mscroll var(--dur, 8s) ease-in-out infinite; }
+    @keyframes lv-mscroll { 0%, 18% { transform: translateX(0); } 70%, 88% { transform: translateX(var(--dx)); } 100% { transform: translateX(0); } }
+    .lv-mnext.appr > i { background: #f0a000; animation: lv-blink 1.4s ease-in-out infinite; }
+    .lv-mnext.appr .lv-mtrack b { animation: lv-blink 1.4s ease-in-out infinite; }
+    .lv-mnext.near > i { background: #f01b48; animation: lv-blink .5s steps(2, jump-none) infinite; }
+    .lv-mnext.near .lv-mtrack b { color: #d3123b; animation: lv-blink .5s steps(2, jump-none) infinite; }
+    .lv-mnext.at > i { background: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,.2); }
+    .lv-mnext.at .lv-mtrack b { color: #15803d; }
+    @keyframes lv-blink { 50% { opacity: .25; } }
+    @media (prefers-reduced-motion: reduce) { .lv-mnext .lv-mtrack b, .lv-mnext > i { animation: none !important; } .lv-mtxt.scroll { animation-duration: 20s; } }
+    body.bm-dark #card.min.lv-hasnext .lv-mnext { color: #f2f2f2; }
+    .lv-shade { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0 2px; padding: 8px 10px; border-radius: 10px; background: #fff6dc; color: #5a4300; font-size: 13px; line-height: 1.35; }
+    .lv-shade svg { flex: none; margin-top: 1px; color: #e09a00; }
+    .lv-shade.even { background: #f3f1ea; color: #555; }
+    body.bm-dark .lv-shade { background: #3a3220; color: #f3e3b5; }
+    body.bm-dark .lv-shade.even { background: #2c2c2e; color: #ccc; }
+    .lv-mv { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; transition: opacity .35s; background: transparent; --poster-color: transparent; --progress-bar-color: transparent; }
+    .lv-mv.in { position: relative; opacity: 1; height: 180px; cursor: grab; }
+    .lv-mv.in:active { cursor: grabbing; }
   </style>
 </head>
 
@@ -395,9 +78,6 @@
   </defs></svg>
 
   <div id="fabs">
-    <a id="logo" href="https://maps.reclaimchennai.city/" title="Maps home" aria-label="Maps home">
-      <svg viewBox="0 0 26 26" style="color:#fff"><use href="#g-bus"/></svg>
-    </a>
     <button id="search-fab" title="Search" aria-label="Search" aria-expanded="false">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.5" y2="16.5"/></svg>
     </button>
@@ -436,11 +116,16 @@
     <div class="cscroll" id="card-body"></div>
   </div>
 
-  <script src="app.js?v=40"></script>
+  <script src="../assets/busmap/busmap.js?v=5"></script>
+  <script src="../assets/busmap/cables.js?v=4b"></script>
+  <script src="app.js?v=202611162111"></script>
   <script src="buses.js?v=4"></script>
   <script src="iso.js?v=3"></script>
-  <script src="live.js?v=27"></script>
-  <script src="traffic.js?v=2"></script>
+  <script src="../assets/busmap/delta.js?v=1b"></script>
+  <script src="../assets/busmap/selfx.js?v=1"></script>
+  <script src="live.js?v=57"></script>
+  <script src="traffic.js?v=3"></script>
+<script>if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));</script>
 </body>
 
 </html>

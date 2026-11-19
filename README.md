@@ -6,10 +6,11 @@ road, and the next bus at every stop. The GTFS feeds built from the same source 
 [reclaimchennai/ChennaiGTFS](https://github.com/reclaimchennai/ChennaiGTFS/tree/chennai-one-feeds/data/chennai-one)
 (MTC buses, CMRL Metro, Southern Railway suburban + MRTS).
 
-Routes, stops and timetables come from **Chennai One**, the CUMTA multimodal app. Live bus
-positions come from the **official MTC app's feed (Chalo)**, read by one collector on our server at
-a polite rate — the map and dashboard read our copy, so visitors never call either service. Fares
-are MTC's own published stage table.
+Routes, stops and timetables come from **Chennai One**, the CUMTA multimodal app, rebuilt on
+MTC's own stop patterns where they differ. Live buses come from two public sources read by our
+server at a polite rate: **MTC's commuter site** (mtcbusits.in: which trip each bus is on, and its
+stop-by-stop times) and **Chalo** (the MTC app's feed: fresher positions). The map and dashboard
+read our copy, so visitors never call either service. Fares are MTC's own published stage table.
 
 ## What is on the map
 
@@ -28,17 +29,26 @@ are MTC's own published stage table.
 ## Layout
 
 ```
-web/       the app as served (MapLibre GL, no build step)
+web/       the app as served (MapLibre GL, no build step); it loads ../assets/busmap/
+  bus3d/                   the 3D bus models' sprite atlas
+  pwa/ sw.js manifest.webmanifest   installable app
   index.html app.js        route explorer
   buses.js iso.js          livery artwork and the 3D bus models (canvas, no image files)
   db/index.html            the dashboard (data.json is generated on the server)
   live.js                  live buses + live arrivals
   traffic.js               observed-speed layer
   data/                    routes, stops, timings, segment geometry (see below)
+assets/busmap/  shared by the city bus maps: card styles, cables, the feed's delta decoding,
+                the picked-bus effect
 server/    runs on the web host
-  chalo_collector.py       live buses from the MTC app's feed (Chalo), route variant by variant;
-                           writes live/vehicles.json every 20 s, archives every GPS fix and the
-                           road speed between fixes (chalo_routes.json: Chalo's route list)
+  mtcits_collector.py      live buses from MTC's commuter site, direction by direction (trip,
+                           stop times, GPS), merged with Chalo's fresher positions; writes
+                           live/vehicles.json, archives every fix (mtc-its.service)
+  chalo_poller.py          Chalo's positions in a process of its own, over kept-alive connections,
+                           buses MTC has no fresh fix for first (mtc-chalo-poller.service)
+  chalo_collector.py       the earlier Chalo-only collector; its matching code is shared
+  mtcits_depots.py         where buses park at night (depots.json): a bus standing there is not
+                           on its trip
   live_collector.py        the same from Chennai One (used until 20 Oct 2026; needs a session)
   travel_model.py          learned time per metre per stop pair and hour -> live/model.json,
                            live/dwell.json (every 3 h); the collector's ETAs (--model)
@@ -69,6 +79,13 @@ everyone from its output.
 
 ```bash
 cd server
+python3 chalo_poller.py --routes chalo_routes.json --out chalo_raw.json --rate 6 --workers 6 \
+  --feed ../web/live/vehicles.json &
+python3 mtcits_collector.py --stops ../web/data/route_stops.json --timings ../web/data/timings.json \
+  --stop-dist ../web/data/stop_dist.json --archive archive --out ../web/live/vehicles.json \
+  --rate 8 --workers 8 --chalo-routes chalo_routes.json --chalo-raw chalo_raw.json \
+  --model ../web/live/model.json
+# the earlier Chalo-only collector:
 python3 chalo_collector.py --stops ../web/data/route_stops.json --timings ../web/data/timings.json \
   --stop-dist ../web/data/stop_dist.json --routes chalo_routes.json --archive archive \
   --out ../web/live/vehicles.json --rate 2 --model ../web/live/model.json
@@ -81,6 +98,22 @@ Serve `web/` with any static server. To rebuild for a new network snapshot: harv
 `server/harvest_fast.py`, then `pipeline/refresh.sh <YYYYMMDD>` (needs `shapely`, `pyproj`).
 
 ## Method notes
+
+The notes below the first two describe the Chalo-only collector (Oct-Nov 2026).
+
+- **Two sources, each for what it does best** (since 17 Nov 2026). MTC's commuter site answers one
+  route direction at a time with every bus on it, its trip and MTC's time for each stop; Chalo
+  answers one route variant at a time with fresher GPS (median ~90 s old against 2-3 min). A bus
+  takes MTC's trip and times and whichever position is newer. Against MTC's own live GPS for 134
+  sampled buses, the drawn position was a median 263 m off (p90 776 m) while the raw fixes were
+  604 m (p90 1.6 km) off.
+- **Keeping a bus where it is.** No stop time earlier than the bus could reach that stop at
+  43 km/h; a bus that left before its timetabled start is shown running, not waiting; a waiting
+  bus starts from its direction's first station (MTC does not list it there); a bus driving
+  forward along its working with no usable MTC times gets our travel model's; a bus standing in a
+  depot gets none. Each MTC direction is matched to the working whose stops pair with most of
+  its stations over the longest span, searched under every route number its name may stand for
+  ("55K CT4" is our 55KCT).
 
 - **One route variant per call, politely.** The MTC app's feed answers live buses per route
   variant (2,817 of them). The collector polls the variants of routes inside their service
@@ -130,6 +163,8 @@ Serve `web/` with any static server. To rebuild for a new network snapshot: harv
 `bus_termini.geojson`, `metro_lines.geojson`, `metro_stations.geojson`, `stop_dist.json`
 (each stop's distance along its route), `seg_geo.json` (stop-to-stop road segments).
 Built from the Chennai One network snapshot of 17 October 2026.
+Not in the repo: the spoken stop announcements (`web/audio/`, 178 MB of generated clips), the bus
+gallery (`web/buses/`) and everything the server generates (`web/live/`, `routes_lite.geojson`).
 
 ## Licence and attribution
 

@@ -45,6 +45,7 @@ import re
 import sys
 import threading
 import time
+import ssl
 import urllib.error
 import urllib.request
 
@@ -61,10 +62,13 @@ PROBE_GAP = 1800     # s: longest gap between two fixes of a bus still read as o
 HOT_MAX = 16         # route variants watched at once: at most HOT_MAX / HOT_EVERY extra requests a second
 
 
+TLS = ssl.create_default_context()     # shared: a new context per request reloads the CA bundle (CPU)
+
+
 def get(path, timeout=30):
     req = urllib.request.Request(BASE + path, headers={'Accept': 'application/json', 'User-Agent': UA})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with urllib.request.urlopen(req, timeout=timeout, context=TLS) as r:
             return r.status, json.loads(r.read() or b'null')
     except urllib.error.HTTPError as e:
         return e.code, None
@@ -127,16 +131,29 @@ class ChaloCollector(Collector):
         """Our route number for a Chalo route name: as is, with the Premium "P" prefix
         (Chalo files P570S buses under 570S too), or its first word ("S100 CMRL Feeder
         Service"). None for services Chennai One does not carry (Chennai Ula, lifts)."""
-        for k in (norm(name), 'P' + norm(name), norm((name or '').split(' ')[0])):
-            if k in self.by_sn:
-                return k
-        return None
+        ks = self.keys(name)
+        return ks[0] if ks else None
+
+    def keys(self, name):
+        """Every route number of ours a name may stand for, best first: as is, "P" + it, without a trailing
+        variant number (MTC's "55K CT4" is our 55KCT), its first word."""
+        n = norm(name)
+        out = []
+        for k in (n, 'P' + n, re.sub(r'\d+$', '', n), norm((name or '').split(' ')[0])):
+            if k and re.search(r'\d', k) and k in self.by_sn and k not in out:
+                out.append(k)
+        return out
+
+    def codes(self, name):
+        """Our workings under every route number a name may stand for: "55K CT4" (Airport Metro-Keerapakkam)
+        searched 55K's workings alone and took Tambaram West-Guduvanchery (L0016, 18 Nov)."""
+        return [c for k in self.keys(name) for c in self.by_sn[k]]
 
     def match(self, sn, lat, lon, bearing, halted):
         """Our working (code), next stop index k and metres along it, or None."""
         best = None
         cx = math.cos(math.radians(lat)) * 111320
-        for code in self.by_sn.get(self.key(sn), []):
+        for code in self.codes(sn):
             ll, ds = self.stopll.get(code), self.sdist.get(code)
             if not ll or not ds or len(ll) < 2:
                 continue

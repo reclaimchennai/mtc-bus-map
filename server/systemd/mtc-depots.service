@@ -1,0 +1,8 @@
+[Unit]
+Description=MTC depots from where buses park at night (mtcits_depots.py -> depots.json, read by mtc-its)
+
+[Service]
+Type=oneshot
+Nice=10
+WorkingDirectory=%h/projects/mtc-live
+ExecStart=/usr/bin/python3 %h/projects/mtc-live/mtcits_depots.py %h/projects/mtc-live/archive %h/projects/mtc-live/depots.json --route-stops %h/projects/maps-site/mapsv2/data/route_stops.json

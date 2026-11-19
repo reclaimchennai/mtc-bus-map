@@ -1,0 +1,20 @@
+{
+  "name": "Chennai MTC Bus Explorer",
+  "short_name": "MTC Buses",
+  "description": "Every Chennai MTC bus live on the map, its route, stops and next arrivals.",
+  "id": "./",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f01b48",
+  "theme_color": "#f01b48",
+  "lang": "en-IN",
+  "categories": ["travel", "navigation"],
+  "icons": [
+    { "src": "pwa/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "pwa/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "pwa/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "pwa/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

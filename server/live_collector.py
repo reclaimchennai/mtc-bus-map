@@ -216,10 +216,13 @@ class Collector:
     def writer(self):
         while True:
             snap = self.snapshot()
-            tmp = self.a.out + '.tmp'
-            with open(tmp, 'w') as fh:
-                json.dump(snap, fh, separators=(',', ':'))
-            os.replace(tmp, self.a.out)
+            try:
+                tmp = self.a.out + '.tmp'
+                with open(tmp, 'w') as fh:
+                    json.dump(snap, fh, separators=(',', ':'))
+                os.replace(tmp, self.a.out)
+            except OSError as e:                       # a full disk must not end this thread for good
+                log(f'vehicles.json not written: {e}')
             time.sleep(self.a.write)
 
     def run(self):

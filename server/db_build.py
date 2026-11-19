@@ -38,6 +38,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bus_build  # noqa: E402
+import bus_types  # noqa: E402
 
 IST = dt.timezone(dt.timedelta(hours=5, minutes=30))
 BUNCH_M, NEAR_M, END_M, MIN_HEADWAY = 250, 500, 400, 6
@@ -125,6 +126,7 @@ def main():
     # ── one pass over the GPS archive ──
     fleet = collections.defaultdict(lambda: [set(), set(), set()])     # hour -> all, electric, ac
     days_seen, regs_all, routes_all, nfix = set(), set(), set(), 0
+    tally = bus_types.Tally(RS)                                       # MTC's service types; buses with no trip
     batches = collections.defaultdict(dict)                           # (code, 2-min bucket) -> reg -> (d, lat, lon, t)
     last = {}
     for day, p in day_files(a.archive, 'obs', a.days):
@@ -134,6 +136,7 @@ def main():
             h = dt.datetime.fromtimestamp(r['t'], IST).hour
             f = fleet[(day, h)]
             f[0].add(r['reg'])
+            tally.add(day, h, r)
             if 'e' in (r.get('f') or ''):
                 f[1].add(r['reg'])
             if 'a' in (r.get('f') or ''):
@@ -254,6 +257,7 @@ def main():
                         'rule': {'bunch_m': BUNCH_M, 'near_m': NEAR_M, 'terminus_m': END_M, 'min_headway': MIN_HEADWAY}},
            'crowding': {'demand_profile': prof, 'cmrl_days': cmrl_days, 'index_by_hour': crowd},
            'roster': roster}
+    out.update(tally.result())
     os.makedirs(a.site + '/db', exist_ok=True)
     tmp = a.site + '/db/data.json.tmp'
     json.dump(out, open(tmp, 'w'), separators=(',', ':'))
@@ -264,6 +268,10 @@ def main():
         bus_build.build(a.site, a.archive, a.bus_cache or os.path.join(os.path.dirname(os.path.abspath(a.archive)), 'busdays'))
     except Exception as e:                                            # the dashboard above is already written
         print(f'bus_build failed: {e!r}')
+    try:
+        bus_types.homes(a.site, RS)
+    except Exception as e:
+        print(f'homes failed: {e!r}')
 
 
 if __name__ == '__main__':

@@ -1,10 +1,9 @@
-/* Live buses — every MTC bus Chennai One is tracking, moving on the map.
+/* Live buses: every MTC bus MTC's own tracking (ITS) reports, moving on the map.
 
    Data: live/vehicles.json, rewritten every ~20 s on the server by
-   chennai_one/v36/live_collector.py, which cycles through the running routes at
-   a polite rate. A full cycle takes minutes, so a bus's GPS fix can be a few
-   minutes old — but each bus also carries the app's own predicted arrival at
-   the stops ahead of it. A bus is therefore drawn by dead reckoning along its
+   mtcits_collector.py from MTC's ITS. A bus's GPS fix can be a minute or two
+   old, but each bus also carries MTC's official predicted arrival at the
+   stops ahead of it. A bus is therefore drawn by dead reckoning along its
    road-snapped route: from its last fix, through those predicted stop times.
 
    Two rules keep that honest (2026-10-20, after a field check that showed
@@ -27,24 +26,58 @@
    Row (fmt 2): [reg, routeCode, lat, lon, bearing, fixEpoch, flags, [i, dt, i, dt, ...]]
    with dt seconds after the fix; older files carry [[i, etaEpoch], ...].
    i indexes ROUTE_STOPS[routeCode].d[0].s; flags a=AC e=electric l=low floor
-   x=express p=premium u=waiting for its next trip.
+   x=express p=premium u=waiting for its next trip,
+     d=Deluxe fare class, s=small bus, w=ladies only (MTC's service type).
+   An optional 9th field is the route number MTC shows on the bus.
 
    Loaded after app.js and buses.js; shares app.js's script scope (map,
    ROUTE_IDX, ROUTE_STOPS, openStop, selectRoute, showCard, tagHTML, $). */
 'use strict';
 (() => {
   const URL_ = 'live/vehicles.json', K = 111320;
+  const FEEDSRC = typeof BUSDELTA !== 'undefined' ? BUSDELTA.feed(URL_) : null;
+  const REPORTS = true;           // rider reports: the reports container behind /mapsv2/api
   const MOBILE = matchMedia('(pointer: coarse)').matches || (navigator.hardwareConcurrency || 8) <= 4;
   const SAVE = !!(navigator.connection && navigator.connection.saveData);
   const CALM = matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const POLL_MS = MOBILE || SAVE ? 40000 : 20000;
-  const lvOf = fl => BUSART.of(fl), lvCol = fl => BUSART.L[lvOf(fl)].key;
+  const POLL_MS = SAVE ? 40000 : 15000;   // deltas are a few hundred bytes: phones too
+  /* MTC's own service types, as its tracking names them on each bus (servicetype): Ordinary,
+     LF Bus (D), Deluxe, Express, Small Bus, Ladies Only, Deluxe (EV), AC (EV), and Premium. Every
+     AC bus MTC runs is electric. The collector folds the name into flags (mtcits_collector.flags_of);
+     this reads them back. `m` is the bus model from the MTC Fleet Archive (/buses) that the map
+     draws for the type. Ordinary buses carry the Vidiyal Payanam pink (women ride free). */
+  const ST = {
+    ordinary: { name: 'Ordinary', col: '#d9468f', m: 'pink-vidiyal-2022', lv: 'diesel' },
+    lf:       { name: 'Low floor', col: '#6b3fc2', m: 'lowfloor-purple-2024', lv: 'diesel' },
+    deluxe:   { name: 'Deluxe', col: '#e8772e', m: 'red-bsiv-2018', lv: 'diesel' },
+    express:  { name: 'Express', col: '#d4b106', m: 'red-bsiv-2018', lv: 'diesel' },
+    small:    { name: 'Small bus', col: '#6f8a3c', m: 'smallbus-2013', lv: 'diesel' },
+    ladies:   { name: 'Ladies only', col: '#f490b8', m: 'pink-vidiyal-2022', lv: 'diesel' },
+    devl:     { name: 'Electric', col: '#2f6fd6', m: 'ebus-nonac-2025', lv: 'ev' },
+    acev:     { name: 'Electric AC', col: '#e2343c', m: 'ebus-2025', lv: 'evAC' },
+    premium:  { name: 'Premium', col: '#a8823a', m: 'premium-gold-2026', lv: 'premium' },
+  };
+  const stOf = fl => fl.includes('p') ? 'premium' : fl.includes('e') ? (fl.includes('a') ? 'acev' : 'devl')
+    : fl.includes('s') ? 'small' : fl.includes('w') ? 'ladies' : fl.includes('l') ? 'lf'
+    : fl.includes('d') ? 'deluxe' : fl.includes('x') ? 'express' : 'ordinary';
+  const lvOf = fl => ST[stOf(fl)].lv, lvCol = fl => ST[stOf(fl)].col;
+  /* no trip in MTC's system (flag n): the bus is drawn as a ghost. Still transmitting (a fix in
+     the last GHOST_FRESH s): where it is. Gone quiet: at its base, the terminus it most often
+     starts its day from (live/homes.json, from the GPS archive), if known. */
+  const GHOST_FRESH = 600;
+  let HOMES = null;
+  fetch('db/homes.json?t=' + Math.floor(Date.now() / 3600e3)).then(r => r.ok ? r.json() : null).then(j => { HOMES = j; }).catch(() => {});
+  const ghostOf = v => (v[6] || '').includes('n');
+  const homeOf = v => ghostOf(v) && now() - v[5] > GHOST_FRESH && HOMES ? HOMES[v[0]] || null : null;
   let on = (() => { try { return localStorage.getItem('mtcLive') !== '0'; } catch (e) { return true; } })();
   let FEED = null, pollT = null, running = false, CODE_FEAT = null;
   const fetchT0 = Date.now();
-  let selReg = null, cardStop = null, cardBus = null;
+  let selReg = null, cardStop = null, cardBus = null, cardIds = null;
+  let follow = false;                     // the map keeps the open bus in the middle (Follow this bus)
   let focusSn = null;                      // a route picked from search or the map: its buses stay in colour
   const GEO = new Map(), TRACK = new Map();
+  // every working's road has arrived (app.js routesFull): buses that ran on stop-to-stop lines take the road
+  document.addEventListener('routes-full', () => { CODE_FEAT = null; GEO.clear(); for (const tr of TRACK.values()) tr.ready = false; });
   const now = () => Date.now() / 1000;
 
   /* ── geometry: route lines as distance-along polylines ── */
@@ -180,6 +213,7 @@
     return tr.disp;
   }
   function glide(tr, t, out) {
+    if (tr.home) { out[0] = tr.home[0]; out[1] = tr.home[1]; out[2] = tr.v[4] || 0; return out; }   // a ghost gone quiet: at its base
     out[0] = tr.v[3]; out[1] = tr.v[2]; out[2] = tr.v[4] || 0;
     if (!tr.from) return out;
     const u = Math.min(1, (t - tr.from[2]) / GLIDE_S);
@@ -199,9 +233,11 @@
   }
 
   function parse(j) {
-    // fmt 2 ships eta as [i, dt, i, dt ...]; expand to [[i, epoch], ...] once per poll
+    // fmt 2 ships eta as [i, dt, i, dt ...]; expand to [[i, epoch], ...] once per row. delta.js hands back
+    // the same rows while nothing changed, so a row already expanded is left alone (expanding it again wiped its ETAs)
     if (j.fmt === 2) for (const v of j.v) {
       const f = v[7], out = [];
+      if (!Array.isArray(f) || Array.isArray(f[0])) continue;
       for (let k = 0; k + 1 < f.length; k += 2) out.push([f[k], v[5] + f[k + 1]]);
       v[7] = out;
     }
@@ -211,7 +247,7 @@
     const t = now(), prev = new Map(TRACK);
     TRACK.clear();
     for (const v of j.v) {
-      const tr = { v, ready: false, g: null, knots: null, lastD: null, hold: null, moving: 0 };
+      const tr = { v, ready: false, g: null, knots: null, lastD: null, hold: null, moving: 0, home: homeOf(v) };
       const old = prev.get(v[0]);
       if (old && old.v[1] === v[1] && old.disp != null) {
         // same bus, same working, drawn before: carry on from where it is drawn
@@ -245,7 +281,7 @@
   function ensureTimings() {
     if (TIMINGS !== undefined || timingsAsked) return;
     timingsAsked = true;
-    fetch(`data/timings.json?v=${DATA_V}`).then(r => r.ok ? r.json() : {}).then(j => { if (TIMINGS === undefined) TIMINGS = j; crowdCache.clear(); }).catch(() => {});
+    dataJoin('timings.json').then(j => { if (TIMINGS === undefined) TIMINGS = j; crowdCache.clear(); }).catch(() => {});
   }
   function crowdRatio(code, h, weekend) {
     const tm = TIMINGS && TIMINGS[code]; if (!tm || !tm.hours) return null;
@@ -284,12 +320,13 @@
     precision mediump float; uniform sampler2D u_tex; varying vec2 v_uv; varying vec4 v_col; varying float v_gray;
     void main() {
       vec4 c = texture2D(u_tex, v_uv) * v_col;
-      // a bus that is not the one picked: black and white, a little faded (premultiplied alpha)
+      // a bus that is not the one picked: pale grey, faded (premultiplied alpha). Lifted toward white
+      // so a rendered bus and its shadow read as a light silhouette, not a dark smudge
       float l = dot(c.rgb, vec3(0.299, 0.587, 0.114));
-      gl_FragColor = mix(c, vec4(vec3(l), c.a) * 0.6, v_gray);
+      gl_FragColor = mix(c, vec4(vec3(l * 0.5 + 0.42 * c.a), c.a) * 0.5, v_gray);
     }`;
   const STRIDE = 12;                       // pos2 off2 uv2 rot1 col4 gray1
-  let vbuf = new Float32Array(STRIDE * 6 * 4096), nverts = 0, ref = [0.5, 0.5], UV = null;
+  let vbuf = new Float32Array(STRIDE * 6 * 4096), nverts = 0, ref = [0.5, 0.5], UV = null, SEGS = [];
   const hex = h => [parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255];
   const COLS = {};
   const mercX = lng => (lng + 180) / 360;
@@ -306,6 +343,196 @@
     }
   }
 
+  // any triangle, offsets in screen px from (mx, my) (y down), one flat colour: the cast shadows
+  function tri3(mx, my, P, uv, a) {
+    if ((nverts + 3) * STRIDE > vbuf.length) { const nb = new Float32Array(vbuf.length * 2); nb.set(vbuf); vbuf = nb; }
+    const u = (uv[0] + uv[2]) / 2, v = (uv[1] + uv[3]) / 2;
+    for (const [ox, oy] of P) {
+      const o = nverts++ * STRIDE;
+      vbuf[o] = mx; vbuf[o + 1] = my; vbuf[o + 2] = ox; vbuf[o + 3] = oy; vbuf[o + 4] = u; vbuf[o + 5] = v;
+      vbuf[o + 6] = -1000; vbuf[o + 7] = 0; vbuf[o + 8] = 0; vbuf[o + 9] = 0; vbuf[o + 10] = a; vbuf[o + 11] = 0;
+    }
+  }
+
+  /* Where the sun is (azimuth clockwise from north, elevation, degrees) at a moment and place:
+     the usual low-precision solar formulae, good to a fraction of a degree, plenty for a shadow. */
+  const RAD = Math.PI / 180;
+  function sunAt(ms, lat, lon) {
+    const d = ms / 86400000 - 10957.5;                      // days from J2000.0
+    const g = (357.529 + 0.98560028 * d) * RAD, q = 280.459 + 0.98564736 * d;
+    const L = (q + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g)) * RAD, e = (23.439 - 0.00000036 * d) * RAD;
+    const ra = Math.atan2(Math.cos(e) * Math.sin(L), Math.cos(L)), dec = Math.asin(Math.sin(e) * Math.sin(L));
+    const gmst = ((18.697374558 + 24.06570982441908 * d) % 24 + 24) % 24;
+    const H = (gmst * 15 + lon) * RAD - ra, f = lat * RAD;
+    const el = Math.asin(Math.sin(f) * Math.sin(dec) + Math.cos(f) * Math.cos(dec) * Math.cos(H));
+    const az = Math.atan2(Math.sin(H), Math.cos(H) * Math.sin(f) - Math.tan(dec) * Math.cos(f)) / RAD + 180;
+    return [(az + 360) % 360, el / RAD];
+  }
+  // ?sun=09:30 puts the sun where it is at that time today (IST) without moving the buses: for checking shadows after dark
+  const SUN_SHIFT = (() => {
+    const m = /^(\d{1,2}):?(\d{2})?$/.exec(new URLSearchParams(location.search).get('sun') || '');
+    if (!m) return 0;
+    const d = new Date(Date.now() + 19800000), want = (+m[1] * 60 + +(m[2] || 0)) * 60000;
+    return want - (d.getUTCHours() * 60 + d.getUTCMinutes()) * 60000;
+  })();
+  let SUN = null, SUN_T = 0;
+  const sunNow = () => {
+    const ms = Date.now() + SUN_SHIFT;
+    if (!SUN || ms - SUN_T > 20000) { const c = map.getCenter(); SUN = sunAt(ms, c.lat, c.lng); SUN_T = ms; }
+    return SUN;
+  };
+
+  /* Each bus's shadow on the road, cast from where the sun is right now: the box of the bus
+     (its model's length, width and height) swept away from the sun by height / tan(elevation),
+     drawn in the sprites' own view (50 degrees from overhead), so the shade falls on the side of
+     the street it really does. Three nested copies give it a soft edge. A faint contact shadow
+     stays under every bus, night or day. The sprites themselves are lit from overhead (no side
+     is the sunny one) so this shadow is the only cue. */
+  const COS_T = Math.cos(50 * RAD);
+  const _H = [];
+  function hull(pts) {                       // monotone chain, pts [[x, y], ...] -> convex hull
+    pts.sort((p, q) => p[0] - q[0] || p[1] - q[1]);
+    const cr = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+    const lo = [], up = [];
+    for (const p of pts) { while (lo.length > 1 && cr(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+    for (let i = pts.length - 1; i >= 0; i--) { const p = pts[i]; while (up.length > 1 && cr(up[up.length - 2], up[up.length - 1], p) <= 0) up.pop(); up.push(p); }
+    return lo.slice(0, -1).concat(up.slice(0, -1));
+  }
+  function shadow(mx, my, h, dims, pxm, bearing, sun, a, uv) {
+    const [L, W0, Ht] = dims, W = W0 - 0.35;   // the model's width includes its mirrors
+    // ground (east, north) metres -> screen px offsets from the anchor, y down
+    const B = bearing * RAD, cb = Math.cos(B), sb = Math.sin(B);
+    const scr = (e, n) => [(e * cb - n * sb) * pxm, -(e * sb + n * cb) * COS_T * pxm];
+    const hr = h * RAD, ax = [Math.sin(hr), Math.cos(hr)], cx = [Math.cos(hr), -Math.sin(hr)];
+    const [az, el] = sun;
+    const lit = el > 2 ? Math.min(1, (el - 2) / 10) : 0;   // fades in after sunrise, out before sunset
+    const len = lit ? Math.min(Ht / Math.tan(Math.max(el, 4) * RAD), Ht * 3.2) : 0;
+    const sx = -Math.sin(az * RAD) * len, sy = -Math.cos(az * RAD) * len;   // away from the sun
+    const layers = lit ? [[0.45, 0.11 * lit], [0.1, 0.11 * lit], [-0.3, 0.11 * lit]] : [];
+    layers.push([0.25, 0.09]);                                             // contact shadow, always
+    for (let k = 0; k < layers.length; k++) {
+      const [grow, al] = layers[k], cast = k < layers.length - 1;
+      const hl = L / 2 + grow, hw = W / 2 + grow;
+      _H.length = 0;
+      for (const [u, w] of [[hl, hw], [hl, -hw], [-hl, -hw], [-hl, hw]]) {
+        const e = ax[0] * u + cx[0] * w, n = ax[1] * u + cx[1] * w;
+        _H.push(scr(e, n));
+        if (cast) _H.push(scr(e + sx, n + sy));
+      }
+      const P = hull(_H);
+      for (let i = 1; i + 1 < P.length; i++) tri3(mx, my, [P[0], P[i], P[i + 1]], uv, al * a);
+    }
+  }
+  let DIMS = {};
+  const DIM0 = [12, 2.6, 3.2];
+
+  /* Which side of the bus is in the shade for the rest of its trip: the sun's side of each stretch
+     of road still ahead, weighted by how long the bus is on it (MTC's own times). In Chennai you
+     sit on the left (door side) or the right. Nothing at night, nothing when the sun is overhead. */
+  function shadeOf(tr) {
+    if (!tr || !tr.knots || !tr.g || tr.knots.length < 2) return null;
+    const t0 = now();
+    if (tr._shade && t0 - tr._shade[0] < 60) return tr._shade[1];
+    const K_ = tr.knots, p = [0, 0, 0];
+    let left = 0, right = 0, total = 0;
+    const d0 = tr.lastD != null ? tr.lastD : K_[0][1];
+    for (let k = 1; k < K_.length; k++) {
+      const [ta, da] = K_[k - 1], [tb, db] = K_[k];
+      if (db <= d0 || tb <= ta) continue;
+      const n = Math.max(1, Math.ceil((db - da) / 250));
+      for (let i = 0; i < n; i++) {
+        const u = (i + 0.5) / n, d = da + (db - da) * u;
+        if (d < d0) continue;
+        const dt = (tb - ta) / n, tm = ta + (tb - ta) * u;
+        at(tr.g, d, p);
+        const [az, el] = sunAt(tm * 1000 + SUN_SHIFT, p[1], p[0]);
+        total += dt;
+        if (el < 8 || el > 72) continue;
+        // sun to the right of the nose: sin(az - heading) > 0. Weaker when it is higher
+        const s = Math.sin((az - p[2]) * RAD) * Math.cos(el * RAD);
+        if (s > 0.15) right += dt; else if (s < -0.15) left += dt;
+      }
+    }
+    let out = null;
+    if (total > 120 && left + right > total * 0.25) {
+      const sunR = right >= left, share = Math.round(100 * Math.max(left, right) / (left + right));
+      out = share < 60 ? { side: null, text: 'The sun comes in on both sides about equally for the rest of this trip' }
+        : { side: sunR ? 'left' : 'right', share, text: `Sit on the <b>${sunR ? 'left' : 'right'}</b>${sunR ? ' (door side)' : ''} for shade: the sun is on the ${sunR ? 'right' : 'left'} for ${share}% of the rest of this trip` };
+    }
+    tr._shade = [t0, out];
+    return out;
+  }
+
+  /* The buses as the MTC Fleet Archive's Blender models (/buses), rendered offline from the same
+     camera as iso.js — 16 headings, 50 degrees from overhead, lit from the north-west, a soft
+     shadow — into one sprite sheet (bus3d/, tools/bus3d/). It loads after the map is up, in place
+     of the drawn buses, so a bus looks like the real one from every side at sprite cost: no 3D
+     engine runs on the map. The glow, snowflake and z cells come over from the drawn atlas. */
+  let UV3D = null;
+  function load3D(layer) {
+    if (SAVE) return;
+    const sz = MOBILE ? '1x' : '2x';
+    fetch(`bus3d/atlas.json?v=${BUS3D_V}`).then(r => r.ok ? r.json() : null).then(A => {
+      if (!A) return;
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = () => {
+        const B = 64;                         // one row more for the wheelchair badge
+        const c = document.createElement('canvas'); c.width = img.width; c.height = img.height + B;
+        const g = c.getContext('2d'); g.drawImage(img, 0, 0);
+        const uv = {}, iso = layer.iso, ic = iso.canvas;
+        for (const [k, [x, y, w, h]] of Object.entries(A.cells[sz])) uv[k] = [x / c.width, y / c.height, (x + w) / c.width, (y + h) / c.height];
+        for (const k of ['glow', 'snow', 'zzz']) {
+          const [x, y, w, h] = A.cells[sz]['_' + k], [u0, v0, u1, v1] = iso.uv[k];
+          g.clearRect(x, y, w, h);
+          g.drawImage(ic, u0 * ic.width, v0 * ic.height, (u1 - u0) * ic.width, (v1 - v0) * ic.height, x, y, w, h);
+          uv[k] = [x / c.width, y / c.height, (x + w) / c.width, (y + h) / c.height];
+        }
+        // the wheelchair badge (low floor with a ramp), as in the bus card: white on solid blue
+        {
+          const y = img.height, k = B / 24;
+          g.save(); g.beginPath(); g.roundRect(3, y + 3, B - 6, B - 6, 12); g.fillStyle = '#1f5fd6'; g.fill();
+          g.lineWidth = 4; g.strokeStyle = '#fff'; g.stroke();
+          g.translate(B * 0.18, y + B * 0.18); g.scale(k * 0.64, k * 0.64);
+          g.lineWidth = 2.4; g.lineCap = 'round'; g.lineJoin = 'round'; g.strokeStyle = '#fff';
+          for (const d of ['M16 3a1 1 0 1 0 0.01 0', 'm18 19 1-7-6 1', 'm5 8 3-3 5.5 3-2.36 3.5', 'M4.24 14.5a5 5 0 0 0 6.88 6', 'M13.76 17.5a5 5 0 0 0-6.88-6']) g.stroke(new Path2D(d));
+          g.restore();
+          uv.acc = [0, y / c.height, B / c.width, (y + B) / c.height];
+          // a solid white block for the cast shadows (tri3 samples its middle)
+          g.fillStyle = '#fff'; g.fillRect(B + 8, y + 8, 16, 16);
+          uv.px = [(B + 12) / c.width, (y + 12) / c.height, (B + 20) / c.width, (y + 20) / c.height];
+          // zoomed out, a bus is a disc in its service colour with an arrow for its heading (white
+          // shapes, tinted per bus): a filled disc, and a chevron pointing up (turned by the shader)
+          const dx0 = B + 32;
+          g.beginPath(); g.arc(dx0 + B / 2, y + B / 2, B / 2 - 2, 0, 6.2832); g.fillStyle = '#fff'; g.fill();
+          uv.disc = [dx0 / c.width, y / c.height, (dx0 + B) / c.width, (y + B) / c.height];
+          const ax = dx0 + B + 8;
+          g.beginPath(); g.moveTo(ax + B / 2, y + 4); g.lineTo(ax + B - 6, y + B - 6); g.lineTo(ax + B / 2, y + B * 0.68); g.lineTo(ax + 6, y + B - 6); g.closePath(); g.fill();
+          uv.arrow = [ax / c.width, y / c.height, (ax + B) / c.width, (y + B) / c.height];
+        }
+        DIMS = A.dims || {};
+        layer.upload(c);
+        UV = uv; UV3D = true; update();
+      };
+      img.src = `bus3d/atlas@${sz}.webp?v=${BUS3D_V}`;
+    }).catch(() => {});
+  }
+  const BUS3D_V = '7';
+  /* Close up, the sheet above is stretched (140 px a bus on a phone, on a screen of 3 pixels a
+     point: mush). From HI_Z each model in view loads its own sheet at three times the detail
+     (bus3d/hi/<model>.webp: 16 headings, 4 x 4 cells of 420 x 330), drawn with its own texture. */
+  const HI_Z = MOBILE ? 15 : 16, HI_CW = 420, HI_CH = 330;
+  const HI = {};                          // model -> 'loading' | texture
+  const hiUV = d => { const x = (d % 4) * HI_CW, y = Math.floor(d / 4) * HI_CH, W = HI_CW * 4, H = HI_CH * 4; return [x / W, y / H, (x + HI_CW) / W, (y + HI_CH) / H]; };
+  function loadHi(m) {
+    if (HI[m] || SAVE || !glLayer.gl) return;
+    HI[m] = 'loading';
+    const img = new Image(); img.decoding = 'async';
+    img.onload = () => { HI[m] = glLayer.texture(img); update(); };
+    img.onerror = () => { HI[m] = 'failed'; };
+    img.src = `bus3d/hi/${m}.webp?v=${BUS3D_V}`;
+  }
+
   const glLayer = {
     id: 'live-gl', type: 'custom', renderingMode: '2d',
     onAdd(m, gl) {
@@ -317,16 +544,25 @@
       for (const a of ['a_pos', 'a_off', 'a_uv', 'a_rot', 'a_col', 'a_gray']) this.loc[a] = gl.getAttribLocation(pr, a);
       for (const u of ['u_matrix', 'u_view', 'u_bearing', 'u_tex']) this.loc[u] = gl.getUniformLocation(pr, u);
       const at = BUSISO.atlas(MOBILE ? 1.0 : 1.25, MOBILE ? 2048 : 4096); UV = at.uv;
+      this.gl = gl; this.iso = at;
       this.tex = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, this.tex);
+      this.upload(at.canvas);
+      this.dirty = true;
+      load3D(this);
+    },
+    // a WebGL2 context (MapLibre 4) mipmaps any size: no shimmer when a big sprite is drawn small
+    texture(src) { const t = this.gl.createTexture(); this.upload(src, t); return t; },
+    upload(src, tex = this.tex) {
+      const gl = this.gl, mip = typeof WebGL2RenderingContext !== 'undefined' && gl instanceof WebGL2RenderingContext;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, true);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, at.canvas);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, src);
       gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      if (mip) gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, mip ? gl.LINEAR_MIPMAP_LINEAR : gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      this.dirty = true;
     },
     render(gl, matrix) {
       if (!on || !nverts) return;
@@ -345,11 +581,15 @@
       const cv = map.getCanvas();
       gl.uniform2f(l.u_view, cv.clientWidth, cv.clientHeight);
       gl.uniform1f(l.u_bearing, map.getBearing() * Math.PI / 180);
-      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, this.tex); gl.uniform1i(l.u_tex, 0);
+      gl.activeTexture(gl.TEXTURE0); gl.uniform1i(l.u_tex, 0);
       gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-      gl.drawArrays(gl.TRIANGLES, 0, nverts);
+      // runs of vertices, each with its texture: the sheet, or a model's close-up sheet
+      for (const [tex, a, n] of SEGS) { gl.bindTexture(gl.TEXTURE_2D, tex || this.tex); gl.drawArrays(gl.TRIANGLES, a, n); }
     },
   };
+  // the picked bus: rings when zoomed out, light leaving its outline zoomed in (assets/busmap/selfx.js),
+  // drawn just under the buses from this layer's own texture
+  const FX = typeof SELFX !== 'undefined' ? SELFX.create(map, { id: 'live-gl-fx', tex: () => glLayer.tex }) : null;
 
   /* ── per-update: positions of buses in view -> vertex buffer ── */
   const lerp = (z, pts) => { if (z <= pts[0][0]) return pts[0][1]; for (let i = 1; i < pts.length; i++) if (z <= pts[i][0]) { const [z0, a] = pts[i - 1], [z1, b] = pts[i]; return a + (b - a) * (z - z0) / (z1 - z0); } return pts[pts.length - 1][1]; };
@@ -358,25 +598,34 @@
   const P3 = [0, 0, 0];
   function update() {
     if (!on || !FEED || !UV) return;
+    if (feedDown()) { nverts = 0; VIS = []; if (FX) FX.set(null); map.triggerRepaint(); labels(); return; }
     const t = now(), z = map.getZoom(), b = map.getBounds();
     const padX = (b.getEast() - b.getWest()) * 0.2 + 0.01, padY = (b.getNorth() - b.getSouth()) * 0.2 + 0.01;
     const W = b.getWest() - padX, E = b.getEast() + padX, S_ = b.getSouth() - padY, N = b.getNorth() + padY;
     const city = z < 11.5, bearing = map.getBearing();
     // 3D sprites: CW x CH logical px, anchored where the wheels meet the road
-    const s = lerp(z, [[9, 0.16], [12, 0.22], [14, 0.38], [16, 0.62], [18, 1.0]]);
+    const s = BUSMAP.busScale(z);           // one size curve for every network's buses (busmap.js)
     const [CW, CH] = BUSISO.CELL, [, AY] = BUSISO.ANCHOR;
     const bw = CW * s, bh = CH * s, lift = -(AY - CH / 2) * s;
     const glowR = 12 * 9 * s * 1.35;
     const snowZ = z >= 12.5, snowPx = lerp(z, [[12.5, 10], [15, 14], [18, 18]]);
     const hourNow = new Date(Date.now() + 19800000).getUTCHours();
     const pulseT = CALM ? 0 : t * 2.4;
+    // a bus is picked: the buses on its route stay in colour (a rider wants to see where the others are)
+    const selTr = selReg && TRACK.get(selReg), selSn = selTr ? snOf(selTr.v[1]) : null;
+    // zoomed out a 3D bus is a speck that is hard to find: buses are discs in their service colour with a
+    // heading arrow up to MK0, the 3D models from MK1, the two crossfading in between
+    const MK0 = 12.6, MK1 = 13.6, mk = UV.disc ? Math.max(0, Math.min(1, (MK1 - z) / (MK1 - MK0))) : 0;
+    const mR = lerp(z, [[9, 3.5], [11, 5], [12.6, 7], [13.6, 8]]), marks = [];
     ref = [mercX((b.getWest() + b.getEast()) / 2), mercY((b.getNorth() + b.getSouth()) / 2)];
     const glows = [], buses = [], snows = [], zzs = [], RAW = [];
+    let pick = null;
     VIS = [];
     for (const [reg, tr] of TRACK) {
       const v = tr.v;
       // cull on the fix first (cheap); a bus moves a few km at most between polls
-      if (reg !== selReg && (v[3] < W - 0.05 || v[3] > E + 0.05 || v[2] < S_ - 0.05 || v[2] > N + 0.05)) continue;
+      const cx0 = tr.home ? tr.home[0] : v[3], cy0 = tr.home ? tr.home[1] : v[2];
+      if (reg !== selReg && (cx0 < W - 0.05 || cx0 > E + 0.05 || cy0 < S_ - 0.05 || cy0 > N + 0.05)) continue;
       if (reg !== selReg && !passes(v[6])) continue;
       const prevD = tr.lastD;
       if (city && !tr.ready) {
@@ -388,80 +637,159 @@
       if (reg !== selReg && (lng0 < W || lng0 > E || lat0 < S_ || lat0 > N)) continue;
       if (tr.lastD != null && prevD != null && tr.lastD - prevD > 0.05) tr.moving = t; // moved since last update
       const rx = mercX(lng0) - ref[0], ry = mercY(lat0) - ref[1];
-      RAW.push([tr, rx, ry]);
+      RAW.push([tr, rx, ry, h]);
       // drawn where it is, nudged aside if it would sit on top of another bus (separate())
       const mx = rx + (tr.ox || 0), my = ry + (tr.oy || 0);
       const lng = lng0 + (tr.ox || 0) * 360, lat = lat0 - (tr.oy || 0) * 360 * Math.cos(lat0 * Math.PI / 180);
-      const fl = v[6], lv = lvOf(fl), col = COLS[lv] || (COLS[lv] = hex(BUSART.L[lv].key));
-      const isMoving = t - (tr.moving || 0) < 3, sel = reg === selReg;
-      // a bus or a route is picked: everything else goes black and white
-      const gray = selReg ? (sel ? 0 : 1) : focusSn ? (snOf(v[1]) === focusSn ? 0 : 1) : 0;
-      if ((isMoving || sel) && !gray) {
+      const fl = v[6], st = stOf(fl), lv = ST[st].lv, col = COLS[st] || (COLS[st] = hex(ST[st].col));
+      const waiting = fl.includes('u');      // MTC: waiting for its next trip
+      const ghost = fl.includes('n');        // no trip in MTC's system: drawn as a ghost
+      const isMoving = !waiting && !ghost && t - (tr.moving || 0) < 3, sel = reg === selReg;
+      // a bus or a route is picked: other routes go black and white (a picked bus's own route stays in colour)
+      const gray = selReg ? (sel || snOf(v[1]) === selSn ? 0 : 1) : focusSn ? (snOf(v[1]) === focusSn ? 0 : 1) : 0;
+      if (isMoving && !sel && !gray) {     // the picked bus has its own light (selfx.js)
         const ph = (reg.charCodeAt(1) * 7 + reg.charCodeAt(reg.length - 1) * 13) % 628 / 100;
-        const a = sel ? 0.55 : (0.30 + 0.14 * Math.sin(pulseT + ph)) * (z < 12 ? 0.6 : 1);
-        glows.push([mx, my, glowR * (sel ? 1.5 : 1), col, a]);
+        glows.push([mx, my, glowR, col, (0.30 + 0.14 * Math.sin(pulseT + ph)) * (z < 12 ? 0.6 : 1)]);
       }
       const dir = Math.round((((h - bearing) % 360 + 360) % 360) / 22.5) % 16;
       const cr = crowdOf(v[1], hourNow), lvl = cr ? cr.level : 1;
-      buses.push([mx, my, `${lv}:${dir}:${lvl}`, gray]);
-      // parked at a terminus (or waiting for its next trip): it sleeps
-      if (z >= 13 && t - (tr.moving || 0) > 90) {
+      // parked at a terminus (or waiting for its next trip): drawn faded, labelled "parked", and
+      // at street zoom it sleeps - a standing bus at the end of its route is not on its way to you
+      // MTC lists a bus under its next trip early, sometimes while it still finishes the last one:
+      // only a bus that has also stood still for 90 s counts as parked
+      const still = t - (tr.moving || 0) > 90;
+      let sleep = waiting && still;
+      if (!sleep && still) {
         const st = stopsOf(v[1]);
-        let sleep = fl.includes('u');
-        if (!sleep && st && st.length > 1) {
+        if (st && st.length > 1) {
           const cx = K * Math.cos(lat * Math.PI / 180), far = s_ => Math.hypot((s_[3] - lng) * cx, (s_[2] - lat) * K);
-          sleep = Math.min(far(st[0]), far(st[st.length - 1])) < 250;
+          sleep = Math.min(far(st[0]), far(st[st.length - 1])) < 400;
         }
-        if (sleep && !gray) zzs.push([mx, my, (reg.charCodeAt(reg.length - 1) % 10) / 10]);
       }
-      if (snowZ && fl.includes('a')) snows.push([mx, my, -(AY * s + snowPx * 0.55), gray]);
+      // flag p: the collector found it standing in a depot (or at a terminus away from its next stop) for 5 min:
+      // not in service, whatever MTC's trip data says (J1383 / J1041 on A51 in Chrompet depot, 16 Nov)
+      tr.depot = fl.includes('p');
+      tr.parked = (sleep || tr.depot) && !ghost;
+      // the archive's 3D models once their atlas has loaded (UV3D), the drawn ones until then
+      const key = UV3D ? `${ST[st].m}:${dir}` : `${lv}:${dir}:${lvl}`;
+      // a ghost keeps its livery, see-through, unless something else is picked
+      const ba = sel ? 1 : ghost ? (gray ? 0.6 : 0.42) : sleep ? 0.5 : 1;
+      if (mk > 0) marks.push([mx, my, col, gray, ba * mk, h, sel ? 1 : 0, (sleep || tr.depot || ghost || waiting) ? 0 : 1]);
+      if (mk < 1) buses.push([mx, my, key, gray, ba * (1 - mk), dir * 22.5 + bearing, sel ? 1 : 0]);   // the heading the sprite shows
+      if (z >= 13 && mk < 0.5 && sleep && !ghost && !gray) zzs.push([mx, my, (reg.charCodeAt(reg.length - 1) % 10) / 10]);
+      // above the bus: a snowflake for AC, a wheelchair for a ramp, side by side when both
+      if (snowZ && mk < 0.5) {
+        const bs = [fl.includes('a') && UV.snow, fl.includes('l') && UV.acc].filter(Boolean);
+        bs.forEach((u, i) => snows.push([mx, my, -(AY * s + snowPx * 0.55), gray, u, (i - (bs.length - 1) / 2) * snowPx * 1.1]));
+      }
       VIS.push([reg, lng, lat, Math.max(14, 12 * 9 * s * 0.45), gray]);
+      if (sel) pick = { id: reg, lng, lat, col, rect: UV[key] || [0, 0, 0, 0], bw, bh, lift, mk, discR: mR * 1.35 + 1.75, z };
     }
     separate(RAW, z, bw);
-    nverts = 0;
+    if (FX) FX.set(pick);
+    nverts = 0; SEGS = [];
+    const seg = tex => { const L = SEGS[SEGS.length - 1]; if (L && L[0] === tex) return; if (L) L[2] = nverts - L[1]; SEGS.push([tex, nverts, 0]); };
+    seg(null);
     for (const [mx, my, r, c, a] of glows) quad(mx, my, r, r, UV.glow, -1000, c[0], c[1], c[2], a);
-    // back to front: farther (higher on screen) first; the picked buses over the greyed ones
-    buses.sort((p, q) => (q[3] - p[3]) || (p[1] - q[1]));
-    for (const [mx, my, key, g] of buses) quad(mx, my, bw, bh, UV[key], -1000, 1, 1, 1, 1, lift, 0, g);
-    for (const [mx, my, dy, g] of snows) quad(mx, my, snowPx, snowPx, UV.snow, -1000, 1, 1, 1, 1, dy, 0, g);
+    // shadows on the road, under every bus, from the sun as it is now (street zooms, the 3D buses)
+    if (UV3D && UV.px && z >= 13) {
+      const sun = sunNow(), pxm = 9 * s, fade = Math.min(1, z - 13);
+      for (const [mx, my, key, g, a, h] of buses) shadow(mx, my, h, DIMS[key.split(':')[0]] || DIM0, pxm, bearing, sun, fade * (g ? 0.4 : 1) * a * a, UV.px);
+    }
+    // back to front: farther (higher on screen) first; the picked buses over the greyed ones.
+    // Close up, each model in view from its own sheet (loadHi), drawn over the rest
+    buses.sort((p, q) => (q[3] - p[3]) || (p[6] - q[6]) || (p[1] - q[1]));   // the picked bus over everything
+    const hiOn = UV3D && z >= HI_Z, hiQ = {};
+    for (const bq of buses) {
+      const [mx, my, key, g, a] = bq, m = hiOn && key.split(':')[0];
+      if (m) { loadHi(m); if (HI[m] && typeof HI[m] === 'object') { (hiQ[m] || (hiQ[m] = [])).push(bq); continue; } }
+      quad(mx, my, bw, bh, UV[key], -1000, a, a, a, a, lift, 0, g);   // premultiplied: fade all four
+    }
+    for (const m in hiQ) {
+      seg(HI[m]);
+      for (const [mx, my, key, g, a] of hiQ[m]) quad(mx, my, bw, bh, hiUV(+key.split(':')[1]), -1000, a, a, a, a, lift, 0, g);
+    }
+    seg(null);
+    if (marks.length) {
+      marks.sort((p, q) => (q[3] - p[3]) || (p[6] - q[6]) || (p[1] - q[1]));
+      for (const [mx, my, c, g, a, h, sl, run] of marks) {
+        const R = mR * (sl ? 1.35 : 1);
+        quad(mx, my, 2 * R + 3.5, 2 * R + 3.5, UV.disc, -1000, 1, 1, 1, a, 0, 0, g);          // white rim
+        quad(mx, my, 2 * R, 2 * R, UV.disc, -1000, c[0], c[1], c[2], a, 0, 0, g);              // service colour
+        // the heading arrow, just ahead of the disc; a standing bus (parked, depot, no trip) gets none
+        if (run) quad(mx, my, R * 1.5, R * 1.5, UV.arrow, h, c[0] * 0.8, c[1] * 0.8, c[2] * 0.8, a, -(R + R * 0.62), 0, g);
+      }
+    }
+    for (const [mx, my, dy, g, u, dx] of snows) quad(mx, my, snowPx, snowPx, u, -1000, 1, 1, 1, 1, dy, dx, g);
     // three z's drifting up and fading, out of phase with each other and other buses
     if (UV.zzz) for (const [mx, my, ph0] of zzs) for (let k = 0; k < 3; k++) {
       const ph = ((CALM ? 0.5 : t * 0.45) + k / 3 + ph0) % 1, sz = (10 + 10 * ph) * Math.max(1, s * 1.8);
       quad(mx, my, sz, sz, UV.zzz, -1000, 1, 1, 1, Math.sin(Math.PI * ph) * 0.95, -(AY * s + 4 + 26 * ph), 6 + 12 * ph);
     }
+    SEGS[SEGS.length - 1][2] = nverts - SEGS[SEGS.length - 1][1];
     glLayer.dirty = true;
     map.triggerRepaint();
     labels();
+    // Follow this bus: keep it in the middle (moveend below skips the move this makes)
+    if (follow && selReg) {
+      const e = VIS.find(x => x[0] === selReg), c = map.getCenter();
+      if (e && (Math.abs(c.lng - e[1]) > 1e-6 || Math.abs(c.lat - e[2]) > 1e-6)) { following = true; map.setCenter([e[1], e[2]]); following = false; }
+      SPEAK.tick(TRACK.get(selReg), t);
+    }
   }
+  let following = false;
+  map.on('dragstart', () => { if (follow) { follow = false; syncFollow(); } });
 
   /* Buses that would be drawn on top of each other - bunched, or several routes at one
-     stop - ease apart instead: each pair closer than three quarters of a bus length is pushed
-     along the line between them, and the push settles in over a few frames (and
-     lets go the same way as they part). Street zooms only; their positions on the
-     road are untouched, only where the sprite is drawn. */
+     stop - line up along the road instead, like a queue at a stop. Buses closer
+     than a bus length form a group (and stay in it until they are half a length
+     further apart, so a group does not flicker); the group is laid out along its
+     buses' common heading, in the order they stand on the road, and that order
+     only changes when one bus has clearly passed another. No sideways push, so a
+     sprite never drifts off the road into the buildings, and big groups close up
+     rather than spreading down the street. Street zooms only, and only where the
+     sprite is drawn: the position on the road is untouched. */
+  let grpSeq = 0;
   function separate(raw, z, bw) {
-    const EASE = 0.14;
-    if (z < 14.5) {
-      for (const [tr] of raw) if (tr.ox || tr.oy) { tr.ox *= 1 - EASE; tr.oy *= 1 - EASE; if (Math.abs(tr.ox) + Math.abs(tr.oy) < 1e-11) tr.ox = tr.oy = 0; }
-      return;
-    }
-    const minD = bw * 0.75 / (512 * Math.pow(2, z));
+    const EASE = 0.12;
+    const ease = (tr, tx, ty) => {
+      tr.ox = (tr.ox || 0) + (tx - (tr.ox || 0)) * EASE; tr.oy = (tr.oy || 0) + (ty - (tr.oy || 0)) * EASE;
+      if (!tx && !ty && Math.abs(tr.ox) + Math.abs(tr.oy) < 1e-11) tr.ox = tr.oy = 0;
+    };
+    if (z < 14.5) { for (const [tr] of raw) { tr.grp = 0; if (tr.ox || tr.oy) ease(tr, 0, 0); } return; }
+    const minD = bw * 0.8 / (512 * Math.pow(2, z)), far = minD * 1.5;
+    const up = raw.map((_, i) => i), root = i => { while (up[i] !== i) i = up[i] = up[up[i]]; return i; };
     const cell = new Map();
-    raw.forEach((r, i) => { r[3] = 0; r[4] = 0; const k = Math.floor(r[1] / minD) + ',' + Math.floor(r[2] / minD); (cell.get(k) || cell.set(k, []).get(k)).push(i); });
+    raw.forEach((r, i) => { const k = Math.floor(r[1] / far) + ',' + Math.floor(r[2] / far); (cell.get(k) || cell.set(k, []).get(k)).push(i); });
     for (let i = 0; i < raw.length; i++) {
-      const x = raw[i][1], y = raw[i][2], cx = Math.floor(x / minD), cy = Math.floor(y / minD);
+      const x = raw[i][1], y = raw[i][2], cx = Math.floor(x / far), cy = Math.floor(y / far), gi = raw[i][0].grp;
       for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (const j of cell.get((cx + a) + ',' + (cy + b)) || []) {
         if (j <= i) continue;
-        let ex = raw[j][1] - x, ey = raw[j][2] - y, d = Math.hypot(ex, ey);
-        if (d >= minD) continue;
-        if (d < minD * 1e-3) { const ang = (i * 2.39996) % (2 * Math.PI); ex = Math.cos(ang); ey = Math.sin(ang); d = 0; } else { ex /= d; ey /= d; }
-        const push = (minD - d) / 2;
-        raw[i][3] -= ex * push; raw[i][4] -= ey * push; raw[j][3] += ex * push; raw[j][4] += ey * push;
+        const d = Math.hypot(raw[j][1] - x, raw[j][2] - y);
+        if (d < (gi && gi === raw[j][0].grp ? far : minD)) up[root(i)] = root(j);
       }
     }
-    for (const r of raw) {
-      const tr = r[0], tx = Math.max(-minD, Math.min(minD, r[3])), ty = Math.max(-minD, Math.min(minD, r[4]));
-      tr.ox = (tr.ox || 0) + (tx - (tr.ox || 0)) * EASE; tr.oy = (tr.oy || 0) + (ty - (tr.oy || 0)) * EASE;
+    const groups = new Map();
+    raw.forEach((r, i) => { const k = root(i); (groups.get(k) || groups.set(k, []).get(k)).push(r); });
+    for (const g of groups.values()) {
+      if (g.length === 1) { const tr = g[0][0]; tr.grp = 0; ease(tr, 0, 0); continue; }
+      // the group's road: the mean of its buses' headings as an axis (either direction counts the same)
+      let sx = 0, sy = 0, mx = 0, my = 0;
+      for (const r of g) { const h = (r[3] || 0) * Math.PI / 90; sx += Math.cos(h); sy += Math.sin(h); mx += r[1]; my += r[2]; }
+      const ang = Math.atan2(sy, sx) / 2, ux = Math.sin(ang), uy = -Math.cos(ang);
+      mx /= g.length; my /= g.length;
+      const id = g.reduce((m, r) => r[0].grp && (!m || r[0].grp < m) ? r[0].grp : m, 0) || ++grpSeq;
+      for (const r of g) { r[4] = (r[1] - mx) * ux + (r[2] - my) * uy; if (r[0].grp !== id) r[0].rank = r[4] / minD; }
+      // keep last frame's order; swap neighbours only once one is clearly past the other
+      g.sort((p, q) => (p[0].rank - q[0].rank) || (p[4] - q[4]));
+      for (let pass = 0; pass < 2; pass++) for (let k = 0; k + 1 < g.length; k++)
+        if (g[k][4] > g[k + 1][4] + minD * 0.5) { const t_ = g[k]; g[k] = g[k + 1]; g[k + 1] = t_; }
+      const step = minD * Math.min(1, 4 / (g.length - 1)), cap = minD * 2.5;
+      g.forEach((r, k) => {
+        const tr = r[0], off = Math.max(-cap, Math.min(cap, (k - (g.length - 1) / 2) * step - r[4]));
+        tr.grp = id; tr.rank = k - (g.length - 1) / 2;
+        ease(tr, off * ux, off * uy);
+      });
     }
   }
 
@@ -481,8 +809,8 @@
       const tr = TRACK.get(reg); if (!tr) continue;
       let el = LBL.get(reg);
       if (!el) { el = document.createElement('span'); LBL.set(reg, el); lblBox.appendChild(el); }
-      const sn = busSn(tr), c = gray ? '#8a8a8a' : lvCol(tr.v[6]);
-      if (el._sn !== sn) { el.textContent = sn; el._sn = sn; }
+      const sn = busSn(tr) + (tr.depot ? ' · in depot' : tr.parked ? (tr.v[6].includes('u') ? ' · waiting' : ' · parked') : ''), c = gray || tr.parked ? '#8a8a8a' : lvCol(tr.v[6]);
+      if (el._sn !== sn) { el.textContent = sn.length > 22 ? sn.slice(0, 21) + '…' : sn; el.title = sn; el._sn = sn; }
       if (el._c !== c) { el.style.color = c; el._c = c; el.classList.toggle('dim', !!gray); }
       el._ll = [lng, lat];
       seen.add(reg);
@@ -516,11 +844,12 @@
     lastU = ts;
     update();
   }
-  map.on('moveend', () => { if (running) update(); });
+  map.on('moveend', () => { if (running && !following) update(); });
 
   function addLayers() {
     if (map.getLayer('live-gl')) return;
     map.addLayer(glLayer);
+    if (FX) FX.add('live-gl');
   }
   // clicks: the nearest drawn bus within reach of the tap
   function busAt(p) {
@@ -545,7 +874,21 @@
   // the number shown for a bus: the collector's own when it differs from the working's
   // (a 570S bus placed on P570S's stops), else the working's
   const busSn = tr => tr.v[8] || snOf(tr.v[1]);
-  const snOf = code => { const f = codeFeat(code); return f ? (f.properties.sn || f.properties.route_name) : String(code).replace(/^c:/, ''); };
+  /* A bus whose trip matched none of our workings comes as "c:<MTC's number>", and MTC's numbers carry
+     variant tags ours don't: "113 CT2" is our 113CT, "A51CT 1" is A51CT, "M51R" is M51RCT. Resolve the
+     way the route build matched them (chennai_one dataset/mtcits_supplement.py service_no), so the
+     card still shows the route; the bus label keeps MTC's own number (busSn). */
+  const svcNo = rno => { const t = String(rno).trim().split(/\s+/); let o = t[0];
+    t.slice(1).forEach(x => { if (/^(CT|CUT)\d*$/i.test(x)) o += 'CT'; else if (!/^(R|RE|E|D|C)?\d*$/i.test(x)) o += x; });
+    return o.toUpperCase().replace(/[^A-Z0-9]/g, ''); };
+  const snOf = code => { const f = codeFeat(code); if (f) return f.properties.sn || f.properties.route_name;
+    const raw = String(code).replace(/^c:/, ''); if (ROUTE_IDX[raw]) return raw;
+    const s = svcNo(raw);
+    return [s, s + 'CT', s.replace(/CT$/, '')].find(x => x && ROUTE_IDX[x]) || raw; };
+
+  let DWELL_P = null;
+  const dwellOf = sid => (DWELL_P || (DWELL_P = fetch('live/dwell.json?t=' + Math.floor(Date.now() / 3600000)).then(r => r.ok ? r.json() : null).catch(() => null)))
+    .then(j => (j && j.stop && sid && j.stop[sid]) || null);
 
   /* ── watching: the route of the open bus, or the picked route, is polled fast on the
      server while anyone has it open. One ping a minute; the server caps how many routes. */
@@ -567,17 +910,19 @@
   /* ── polling ── */
   function poll() {
     if (document.hidden) return;
-    fetch(`${URL_}?t=${Math.floor(Date.now() / 10000)}`).then(r => r.ok ? r.json() : null).then(j => {
+    // the whole feed once, then only the buses that changed (delta.js); without it, the whole file each time
+    (FEEDSRC ? FEEDSRC.get().catch(() => null) : fetch(`${URL_}?t=${Math.floor(Date.now() / 10000)}`).then(r => r.ok ? r.json() : null)).then(j => {
       if (!j || !Array.isArray(j.v)) throw 0;
-      FEED = parse(j);
-      ingest(FEED); update(); pill();
+      FEED = parse(j); feedErr = false;
+      ingest(FEED); update(); pill(false);
       if (cardStop) paintStopArrivals();
       if (cardBus) paintBus(cardBus, false);
+      else if (focusSn) liveOnRoute();
     }).catch(() => { pill(true); });
   }
   function ensureStops() {
     if (ROUTE_STOPS !== undefined) return Promise.resolve();
-    return fetch(`data/route_stops.json?v=${DATA_V}`).then(r => r.ok ? r.json() : {}).then(j => { if (ROUTE_STOPS === undefined) ROUTE_STOPS = j; })
+    return dataJoin('route_stops.json').then(j => { if (ROUTE_STOPS === undefined) ROUTE_STOPS = j; })
       .catch(() => {});
   }
   function start() {
@@ -586,7 +931,7 @@
     ensureStops().then(() => { for (const tr of TRACK.values()) tr.ready = false; GEO.clear(); });
     poll();
     clearInterval(pollT);
-    // every 10 s while a bus or route is open (the collector polls those every 30 s), else POLL_MS
+    // every 10 s while a bus or route is open (the collector polls those every 15 s), else POLL_MS
     let lastPoll = Date.now();
     pollT = setInterval(() => {
       if (watchSn() || Date.now() - lastPoll >= POLL_MS - 500) { lastPoll = Date.now(); poll(); }
@@ -596,157 +941,109 @@
   }
   function stop() {
     clearInterval(pollT); pollT = null; running = false;
-    nverts = 0; VIS = []; map.triggerRepaint(); labels();
+    nverts = 0; VIS = []; if (FX) FX.set(null); map.triggerRepaint(); labels();
     pill();
     if (cardStop) paintStopArrivals();
   }
   document.addEventListener('visibilitychange', () => { if (!document.hidden && on) poll(); });
 
-  /* ── filters in the top pill: tap a bus type to hide or show it, or show
-     only wheelchair-accessible buses. LIVE itself stays a status. ── */
-  const GROUPS = [['diesel', 'bus', 'Diesel'], ['dieselAC', 'snow', 'AC'], ['ev', 'bolt', 'Electric'], ['evAC', 'bolt', 'Electric AC']];
-  const groupOf = fl => { const lv = lvOf(fl); return lv === 'premium' ? 'evAC' : lv; };
-  const FILT = (() => { try { const j = JSON.parse(localStorage.getItem('mtcLiveFilter') || '{}'); return { off: j.off || [], wc: !!j.wc }; } catch (e) { return { off: [], wc: false }; } })();
-  const saveFilt = () => { try { localStorage.setItem('mtcLiveFilter', JSON.stringify(FILT)); } catch (e) {} };
-  const passes = fl => !FILT.off.includes(groupOf(fl)) && (!FILT.wc || fl.includes('l'));
-  const filtered = () => FILT.off.length > 0 || FILT.wc;
+  /* ── filters (in the strip at the bottom): tap a bus type to hide or show it, or show
+     only wheelchair-accessible buses. LIVE, at the top, stays a status. ── */
+  // one chip per MTC service type (ST above)
+  const GROUPS = Object.entries(ST).map(([k, t]) => [k, t.lv === 'diesel' ? 'bus' : 'bolt', t.name]);
+  const groupOf = stOf;
+  const FILT = (() => { try { const j = JSON.parse(localStorage.getItem('mtcLiveFilter2') || '{}'); return { off: (j.off || []).filter(g => ST[g]), wc: !!j.wc, ng: !!j.ng }; } catch (e) { return { off: [], wc: false, ng: false }; } })();
+  const saveFilt = () => { try { localStorage.setItem('mtcLiveFilter2', JSON.stringify(FILT)); } catch (e) {} };
+  const passes = fl => !FILT.off.includes(groupOf(fl)) && (!FILT.wc || fl.includes('l')) && (!FILT.ng || !fl.includes('n'));
+  const filtered = () => FILT.off.length > 0 || FILT.wc || FILT.ng;
 
-  /* ── status pill ── */
-  const css = document.createElement('style');
-  css.textContent = `
-    #live-pill { position: fixed; z-index: 590; left: 50%; transform: translateX(-50%); top: calc(14px + env(safe-area-inset-top));
-      display: none; align-items: center; gap: 8px; padding: 6px 11px 6px 9px; border-radius: 999px;
-      background: rgba(255,255,255,.94); box-shadow: 0 2px 10px rgba(0,0,0,.16); font-size: 12px; color: #333;
-      font-variant-numeric: tabular-nums; backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); }
-    #live-pill.show { display: flex; }
-    #live-pill .dot { width: 8px; height: 8px; border-radius: 50%; background: #f01b48; box-shadow: 0 0 0 0 rgba(240,27,72,.5); animation: lpulse 1.8s infinite; }
-    #live-pill.stale .dot { background: #aaa; animation: none; }
-    #live-pill b { font-weight: 700; letter-spacing: .04em; }
-    @keyframes lpulse { 70% { box-shadow: 0 0 0 7px rgba(240,27,72,0); } 100% { box-shadow: 0 0 0 0 rgba(240,27,72,0); } }
-    @media (prefers-reduced-motion: reduce) { #live-pill .dot { animation: none; } }
-    .lv-row { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; align-items: center; padding: 7px 2px; border-bottom: 1px solid #efe9de; }
-    .lv-row:last-child { border-bottom: 0; }
-    .lv-row .when { font-weight: 700; font-variant-numeric: tabular-nums; text-align: right; white-space: nowrap; }
-    .lv-row .when small { display: block; font-weight: 400; color: var(--muted); font-size: 11px; }
-    .lv-row .meta { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .lv-row .meta b { color: #333; font-weight: 600; }
-    .lv-chip { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 5px; margin-right: 4px; color: #fff; vertical-align: 1px; }
-    .lv-hero { display: grid; place-items: center; padding: 4px 0 2px; }
-    .lv-hero img { width: min(300px, 86%); height: auto; }
-    .lv-crowd { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; padding: 2px 2px 8px; }
-    .lv-crowd span:last-child { color: var(--muted); font-size: 12px; }
-    .lv-bars { display: flex; align-items: flex-end; gap: 2px; height: 46px; padding: 0 2px; }
-    .lv-bars i { flex: 1; border-radius: 2px 2px 0 0; min-height: 2px; }
-    .lv-axis { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); padding: 3px 2px 0; font-variant-numeric: tabular-nums; }
-    .lv-hero img { width: min(230px, 66%); margin: -14px 0 -10px; }
-    #card .chead { padding-right: 84px; }
-    #card .lv-share { right: 48px; display: none; place-items: center; }
-    #card .lv-share.on { display: grid; }
-    #lv-toast { position: fixed; left: 50%; bottom: calc(28px + env(safe-area-inset-bottom)); transform: translate(-50%, 20px); opacity: 0; z-index: 950;
-      background: #1c1c1e; color: #fff; font-size: 13px; padding: 9px 14px; border-radius: 999px; transition: opacity .2s, transform .2s; pointer-events: none; }
-    #lv-toast.show { opacity: 1; transform: translate(-50%, 0); }
-    .lv-busline { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 2px; }
-    #lv-busbar { margin-bottom: 10px; }
-    #lv-busbar .lv-report { margin-top: 0; }
-    .rail.lv-live li.passed .rl.out .dot { background: var(--red); }
-    .rail.lv-live li.passed .lbl.out .nm { color: #9a958b; }
-    .rail.lv-live li.next .rl.out .dot { background: var(--red); animation: lvblink 1.1s ease-in-out infinite; }
-    .rail.lv-live li.next .lbl.out .nm { color: var(--red); font-weight: 800; }
-    @keyframes lvblink { 0%, 100% { box-shadow: 0 0 0 0 rgba(240,27,72,.55); background: var(--red); } 50% { box-shadow: 0 0 0 7px rgba(240,27,72,0); background: #fff; } }
-    .rail.lv-live .cap.next .capdot { animation: lvblink 1.1s ease-in-out infinite; }
-    .lv-eta { display: block; font-size: 11px; font-weight: 700; color: var(--red); font-variant-numeric: tabular-nums; margin-top: 1px; }
-    .rail.lv-live li:not(.next) .lv-eta { color: var(--muted); font-weight: 600; }
-    @media (prefers-reduced-motion: reduce) { .rail.lv-live li.next .rl.out .dot, .rail.lv-live .cap.next .capdot { animation: none; } }
-    .lv-ico { display: inline-grid; place-items: center; width: 19px; height: 19px; border-radius: 6px; color: #fff; margin-right: 4px; vertical-align: -4px; }
-    .lv-ico.ac { color: #1677d2; box-shadow: inset 0 0 0 1.2px #8cc6f5; }
-    .lv-ico.ac svg { stroke-width: 2.4; }
-    .lv-f[data-g="dieselAC"] i { background: #e4f3ff !important; color: #1677d2; box-shadow: inset 0 0 0 1px #8cc6f5; }
-    .lv-f[data-g="dieselAC"].off i { background: #cfcac0 !important; color: #fff; box-shadow: none; }
-    #live-pill { pointer-events: auto; max-width: calc(100vw - 150px); }
-    #live-pill .lv-live { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
-    #live-pill .key { display: flex; gap: 3px; margin-left: 2px; color: #555; overflow-x: auto; scrollbar-width: none; }
-    #live-pill .key::-webkit-scrollbar { display: none; }
-    .lv-f { display: inline-flex; align-items: center; gap: 4px; border: 0; background: none; font: inherit; font-size: 12px; color: #444; padding: 3px 6px; border-radius: 999px; cursor: pointer; white-space: nowrap; }
-    .lv-f:hover { background: #f1ece2; }
-    .lv-f i { display: inline-grid; place-items: center; width: 16px; height: 16px; border-radius: 5px; color: #fff; }
-    .lv-f.off { color: #aaa; text-decoration: line-through; }
-    .lv-f.off i { background: #cfcac0 !important; }
-    .lv-f.wc { border: 1px solid #d9e3f7; }
-    .lv-f.wc.on { background: #1f5fd6; color: #fff; border-color: #1f5fd6; }
-    @media (max-width: 640px) { .lv-f span { display: none; } .lv-f { padding: 3px 4px; } }
-    .lv-stop { cursor: pointer; border-radius: 8px; transition: background .15s; }
-    .lv-stop:hover, .lv-stop:focus-visible { background: #f3eee4; outline: none; }
-    .lv-pin { color: #f01b48; display: inline-flex; }
-    .lv-report { display: inline-flex; align-items: center; gap: 5px; float: right; margin: -6px 0 0; border: 1px solid #e3dccd; background: #fff; color: #444;
-      font: inherit; font-size: 12px; font-weight: 600; border-radius: 999px; padding: 4px 10px; cursor: pointer; }
-    .lv-report:hover { border-color: #f01b48; color: #f01b48; }
-    .lv-stophead { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 2px 0 6px; }
-    .lv-backbtn { display: inline-flex; align-items: center; gap: 5px; border: 0; background: #f3eee4; color: #333; font: inherit; font-size: 12.5px; font-weight: 600; border-radius: 999px; padding: 5px 11px; cursor: pointer; }
-    .lv-said { display: flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 4px 2px; color: #333; }
-    .lv-said span { margin-left: auto; color: var(--muted); font-size: 11.5px; white-space: nowrap; }
-    #card { transition: opacity .17s ease, transform .17s ease; }
-    #card.lv-out { opacity: 0; transform: translateX(14px); }
-    #card.lv-in { animation: lvin .26s cubic-bezier(.32,.72,0,1); }
-    @keyframes lvin { from { opacity: 0; transform: translateX(-14px); } to { opacity: 1; transform: none; } }
-    #lv-sheet { position: fixed; inset: 0; z-index: 900; background: rgba(20,20,24,.32); display: none; align-items: flex-end; justify-content: center; }
-    #lv-sheet.open { display: flex; animation: lvfade .18s ease; }
-    @keyframes lvfade { from { opacity: 0; } }
-    .lv-sheetbox { width: min(440px, 100%); max-height: 86vh; overflow: auto; background: #fffdf8; border-radius: 20px 20px 0 0; padding: 14px 16px calc(18px + env(safe-area-inset-bottom));
-      box-shadow: 0 -10px 40px rgba(0,0,0,.2); animation: lvup .26s cubic-bezier(.32,.72,0,1); }
-    @media (min-width: 700px) { #lv-sheet { align-items: center; } .lv-sheetbox { border-radius: 20px; } }
-    @keyframes lvup { from { transform: translateY(40px); opacity: 0; } }
-    .lv-sheethead { display: grid; grid-template-columns: 32px 1fr 32px; align-items: center; text-align: center; font-size: 16px; }
-    .lv-x { border: 0; background: #f3eee4; width: 30px; height: 30px; border-radius: 50%; cursor: pointer; display: grid; place-items: center; font-size: 14px; color: #444; }
-    .lv-sub { text-align: center; font-size: 12.5px; color: var(--muted); margin: 6px 0 10px; }
-    .lv-lbls { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-    .lv-lbls span { position: absolute; left: 0; top: 0; font: 700 11px/1 "Noto Sans", system-ui, sans-serif; white-space: nowrap; will-change: transform;
-      text-shadow: 0 0 2px #fff, 0 0 2px #fff, 0 0 3px #fff, 0 0 3px #fff; }
-    .lv-lbls span.dim { opacity: .75; }
-    .lv-glabel { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 12px 2px 6px; }
-    .lv-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
-    .lv-tiles.two { grid-template-columns: 1fr 1fr; margin-top: 12px; }
-    .lv-tile { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 7px; min-height: 84px; padding: 10px 8px; border: 1.5px solid #e7e0d2;
-      background: #fff; border-radius: 14px; font: inherit; font-size: 13px; font-weight: 600; color: #222; cursor: pointer; text-align: center; transition: transform .08s, border-color .15s; }
-    .lv-tile:hover { border-color: #f01b48; }
-    .lv-tile:active { transform: scale(.96); }
-    .lv-tile svg { color: #f01b48; }
-    .lv-thanks { display: flex; gap: 12px; align-items: center; font-size: 13.5px; color: #333; padding: 6px 2px; }
-    .lv-thanks svg { color: #2fa35a; flex: none; }
-    .lv-note { font-size: 12px; color: var(--muted); padding: 6px 2px 2px; }
-    .lv-btn { margin-top: 6px; border: 0; background: #f6f1e7; color: #333; font-weight: 600; border-radius: 9px; padding: 8px 12px; cursor: pointer; font-size: 13px; }
-    .lv-btn:hover { background: #efe8da; }
-  `;
-  document.head.appendChild(css);
+  /* ── status pill ── (its styles, and the card's, are in ../assets/busmap/busmap.css) */
   const pillEl = document.createElement('div');
   pillEl.id = 'live-pill';
   document.body.appendChild(pillEl);
+  /* The feed is down when the server's file stops changing (collector or the
+     source API stopped: older than 3 min, or written with no buses) or cannot
+     be fetched at all. Then no buses are drawn - dead reckoning from old fixes
+     would invent them - and the pill turns red until the feed comes back. */
+  let feedErr = false, wasDown = false;
+  // the file is rewritten even while the source API fails (with the last buses it had),
+  // so freshness is read from the GPS fixes too: no bus heard from in 5 min = down
+  const heard = F => F.heard != null ? F.heard : (F.heard = F.v.some(v => v[5] > F.t - 300 && v[5] < F.t + 600));
+  const feedDown = () => FEED ? (FEED.v.length === 0 || now() - FEED.t > 180 || !heard(FEED)) : feedErr;
   function pill(err) {
+    if (err !== undefined) feedErr = !!err;
     if (!on) { pillEl.classList.remove('show'); return; }
     pillEl.classList.add('show');
-    const age = FEED ? Math.max(0, Math.round(now() - FEED.t)) : null;
-    const paused = FEED && FEED.v.length === 0;               // the collector has no buses (source down or paused)
-    const stale = err || !FEED || age > 180 || paused;
-    pillEl.classList.toggle('stale', stale);
+    const down = feedDown();
+    pillEl.classList.toggle('down', down);
+    pillEl.classList.toggle('wait', !FEED && !down);
+    if (down !== wasDown) { wasDown = down; if (down) toast('Live bus tracking is paused. It will resume soon.'); update(); }
     const shown = FEED ? FEED.v.filter(v => passes(v[6])).length : 0;
     const count = FEED ? (filtered() ? `${shown.toLocaleString('en-IN')} of ${FEED.v.length.toLocaleString('en-IN')}` : FEED.v.length.toLocaleString('en-IN')) + ' buses' : '';
-    pillEl.innerHTML = `<span class="lv-live"><span class="dot"></span><b>LIVE</b>` + (paused
-      ? `<span>paused — reconnecting to the live feed</span>`
-      : FEED ? `<span>${count}${stale ? ` · ${Math.round(age / 60)} min old` : ''}</span>`
-      : `<span>${err ? 'live feed unavailable' : 'connecting…'}</span>`) + `</span>`
-      + `<span class="key">${GROUPS.map(([g, icon, name]) => `<button class="lv-f${FILT.off.includes(g) ? ' off' : ''}" data-g="${g}" aria-pressed="${!FILT.off.includes(g)}" title="${FILT.off.includes(g) ? 'Show' : 'Hide'} ${name} buses"><i style="background:${BUSART.L[g].key}">${ic(icon, 10)}</i><span>${name}</span></button>`).join('')}`
-      + `<button class="lv-f wc${FILT.wc ? ' on' : ''}" data-wc aria-pressed="${FILT.wc}" title="${FILT.wc ? 'Show all buses' : 'Show only wheelchair-accessible buses'}"><i style="background:#1f5fd6">${ic('access', 10)}</i><span>Accessible</span></button></span>`;
+    pillEl.innerHTML = `<span class="lv-live"><span class="dot"></span>` + (down
+      ? `<span><b>0 buses</b> · Live tracking will resume soon</span>`
+      : FEED ? `<b>LIVE</b><span>${count}</span>`
+      : `<span>connecting…</span>`) + `</span>`;
+    strip();
   }
-  pillEl.addEventListener('click', e => {
+  /* Mobile first: the filters in one strip at the bottom — the three biggest kinds of bus, and a
+     "Filters" button opening every choice as a list. Nothing scrolls sideways. A tap redraws only
+     what changed: the open list keeps its place (no jump back to the top, no replayed animation). */
+  const stripEl = document.createElement('div');
+  stripEl.id = 'lv-strip';
+  document.body.appendChild(stripEl);
+  let MORE = false;
+  function strip() {
+    if (!on) { stripEl.classList.remove('show'); return; }
+    stripEl.classList.add('show');
+    const n = {}; if (FEED) for (const v of FEED.v) { const g = groupOf(v[6]); n[g] = (n[g] || 0) + 1; }
+    const groups = GROUPS.slice().sort((x, y) => (n[y[0]] || 0) - (n[x[0]] || 0));
+    const chip = ([g, icon, name]) => `<button class="lv-f${FILT.off.includes(g) ? ' off' : ''}" data-g="${g}" aria-pressed="${!FILT.off.includes(g)}" title="${FILT.off.includes(g) ? 'Show' : 'Hide'} ${name} buses"><i style="background:${ST[g].col}">${ic(icon, 10)}</i><span>${name}</span>${FEED ? `<b class="lv-n">${(n[g] || 0).toLocaleString('en-IN')}</b>` : ''}</button>`;
+    const wcB = `<button class="lv-f wc${FILT.wc ? ' on' : ''}" data-wc aria-pressed="${FILT.wc}" title="${FILT.wc ? 'Show all buses' : 'Show only wheelchair-accessible buses'}"><i style="background:#1f5fd6">${ic('access', 10)}</i><span>Accessible only</span></button>`;
+    // like Accessible only: when it is on, the whole cell is filled (grey), so it reads as a choice that is in force
+    const nN = FEED ? FEED.v.reduce((k, v) => k + (v[6].includes('n') ? 1 : 0), 0) : 0;
+    const ngB = `<button class="lv-f ng${FILT.ng ? ' on' : ''}" data-ng aria-pressed="${FILT.ng}" title="${FILT.ng ? 'Buses with no trip in MTC\u2019s system are hidden: tap to show them (faded)' : 'Buses with no trip in MTC\u2019s system are shown faded: tap to hide them'}"><i style="background:#9a9aa0">${ic('bus', 10)}</i><span>${FILT.ng ? 'Not on a trip: hidden' : 'Hide buses not on a trip'}</span>${FEED ? `<b class="lv-n">${nN.toLocaleString('en-IN')}</b>` : ''}</button>`;
+    const extra = [wcB, ngB];
+    const MAIN = 3, all = groups.length + extra.length <= MAIN + 1;   // few enough: every choice on the strip, no menu
+    const active = FILT.off.length + (FILT.wc ? 1 : 0) + (FILT.ng ? 1 : 0);
+    const html = all ? `<div class="key">${groups.map(chip).join('')}${extra.join('')}</div>`
+      : `<div class="key">${groups.slice(0, MAIN).map(chip).join('')}`
+        + `<button class="lv-f lv-more${MORE ? ' on' : ''}" data-more aria-expanded="${MORE}" title="Every kind of bus, accessible buses"><svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M3 6h18M6 12h12M10 18h4"/></svg><em>Filters</em>${active ? `<b class="lv-dotn">${active}</b>` : ''}<span class="chev">${MORE ? '▾' : '▴'}</span></button></div>`
+        + (MORE ? `<div class="lv-drop" role="menu"><div class="lv-dh">Kinds of bus</div>${groups.map(chip).join('')}${extra.length ? `<div class="lv-dh">Show</div>${extra.join('')}` : ''}</div>` : '');
+    if (html === stripEl._html) return;
+    const had = !!stripEl.querySelector('.lv-drop');
+    stripEl._html = html;
+    const t = document.createElement('div'); t.id = 'lv-strip'; t.className = stripEl.className; t.innerHTML = html;
+    morph(stripEl, t);
+    const d = stripEl.querySelector('.lv-drop'); if (d && !had) d.classList.add('anim');
+  }
+  const morph = (a, b) => {    // make node a look like node b, touching only what differs
+    if (a.nodeName !== b.nodeName) { a.replaceWith(b); return; }
+    if (a.nodeType === 3) { if (a.data !== b.data) a.data = b.data; return; }
+    if (a.nodeType !== 1) return;
+    for (const n of [...a.attributes]) if (!b.hasAttribute(n.name)) a.removeAttribute(n.name);
+    for (const n of [...b.attributes]) if (a.getAttribute(n.name) !== n.value) a.setAttribute(n.name, n.value);
+    const ka = [...a.childNodes], kb = [...b.childNodes];
+    kb.forEach((n, i) => i < ka.length ? morph(ka[i], n) : a.appendChild(n));
+    ka.slice(kb.length).forEach(n => n.remove());
+  };
+
+  // a click anywhere else closes the menu (a button redrawn by its own click is no longer in the page: not "elsewhere")
+  document.addEventListener('click', e => { if (MORE && e.target.isConnected && !stripEl.contains(e.target)) { MORE = false; strip(); } });
+  stripEl.addEventListener('click', e => {
     const b = e.target.closest('.lv-f'); if (!b) return;
+    e.stopPropagation();
+    if (b.dataset.more != null) { MORE = !MORE; strip(); return; }
     if (b.dataset.g) {
       const g = b.dataset.g, i = FILT.off.indexOf(g);
       if (i >= 0) FILT.off.splice(i, 1); else FILT.off.push(g);
       if (FILT.off.length === GROUPS.length) FILT.off = FILT.off.filter(x => x !== g);   // never hide everything
-    } else FILT.wc = !FILT.wc;
+    } else if (b.dataset.wc != null) FILT.wc = !FILT.wc;
+    else if (b.dataset.ng != null) FILT.ng = !FILT.ng;
     saveFilt(); pill(); update();
     if (cardStop) paintStopArrivals();
   });
-  setInterval(() => on && FEED && pill(), 15000);
+  setInterval(() => on && pill(), 15000);
 
   /* ── cards ── */
   const hhmm = t => new Date(t * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' });
@@ -764,6 +1061,7 @@
     noshow: '<path d="M9.88 9.88a3 3 0 1 0 4.24 4.24"/><path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68"/><path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61"/><line x1="2" x2="22" y1="2" y2="22"/>',
     skip: '<path d="m15 9-6 6"/><path d="M2.586 16.726A2 2 0 0 1 2 15.312V8.688a2 2 0 0 1 .586-1.414l4.688-4.688A2 2 0 0 1 8.688 2h6.624a2 2 0 0 1 1.414.586l4.688 4.688A2 2 0 0 1 22 8.688v6.624a2 2 0 0 1-.586 1.414l-4.688 4.688a2 2 0 0 1-1.414.586H8.688a2 2 0 0 1-1.414-.586z"/><path d="m9 9 6 6"/>',
     check: '<path d="M20 6 9 17l-5-5"/>',
+    sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>',
     back: '<path d="m12 19-7-7 7-7"/><path d="M19 12H5"/>',
     pin: '<path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/>',
     snow: '<line x1="2" x2="22" y1="12" y2="12"/><line x1="12" x2="12" y1="2" y2="22"/><path d="m20 16-4-4 4-4"/><path d="m4 8 4 4-4 4"/><path d="m16 4-4 4-4-4"/><path d="m8 20 4-4 4 4"/>',
@@ -778,23 +1076,28 @@
   const badge = (k, bg, title, cls = '') => `<span class="lv-ico${cls}" style="background:${bg}" title="${title}" aria-label="${title}">${ic(k, 12)}</span>`;
   const chips = fl => {
     const lv = lvOf(fl);
-    return (fl.includes('e') ? badge('bolt', lv === 'evAC' || lv === 'premium' ? '#e2343c' : '#5a2ad0', 'Electric') : '')
+    return (fl.includes('e') ? badge('bolt', BUSART.L[lv] && BUSART.L[lv].ev ? BUSART.L[lv].key : '#2f7fd6', 'Electric') : '')
       // AC: a blue snowflake on ice, so it never reads as the solid-blue wheelchair badge
       + (fl.includes('a') ? badge('snow', '#e4f3ff', 'AC', ' ac') : '')
       + (fl.includes('l') ? badge('access', '#1f5fd6', 'Low floor with a ramp — wheelchair accessible') : '')
       + (fl.includes('p') ? `<span class="lv-chip" style="background:linear-gradient(180deg,#e0c27a,#b8892f);color:#121212">Premium</span>` : '')
       + (fl.includes('x') ? `<span class="lv-chip" style="background:#b8860b">Express</span>` : '')
-      + (fl.includes('u') ? `<span class="lv-chip" style="background:#8a8a8e">Waiting for next trip</span>` : '');
+      + (fl.includes('d') ? `<span class="lv-chip" style="background:#b03a3a">Deluxe</span>` : '')
+      + (fl.includes('s') ? `<span class="lv-chip" style="background:#7d8c5c">Small bus</span>` : '')
+      + (fl.includes('w') ? `<span class="lv-chip" style="background:#c2185b">Ladies only</span>` : '')
+      + (fl.includes('p') ? `<span class="lv-chip" style="background:#8a8a8e">In depot · not in service</span>`
+        : fl.includes('u') ? `<span class="lv-chip" style="background:#8a8a8e">Waiting for next trip</span>` : '');
   };
   const ago = s => s < 90 ? `${Math.max(0, Math.round(s))} s` : `${Math.round(s / 60)} min`;
 
   /* ── shareable state: the address bar always holds a link to what is open,
      and the Share button hands out the short link whose card WhatsApp, X and
      Facebook can show (/r /s /b, served by share_api.py) ── */
+  // short share links on whichever domain the map is served from (maps.reclaim.city, or the old maps.reclaimchennai.city)
   const ORIGIN = 'https://mtc.reclaimchennai.city';
   let SHARE = null;
   function setShare(q, short, title) {
-    SHARE = { url: ORIGIN + short, title };
+    SHARE = { url: ORIGIN + short, title };                          // /r /s /b: share pages with cards
     try { history.replaceState(null, '', q ? '?' + q : location.pathname); } catch (e) {}
     shareBtn.classList.toggle('on', !!q);
   }
@@ -826,7 +1129,21 @@
     if (ROUTE_IDX[sn]) { baseSelect(sn, code); map.stop(); map.jumpTo(cam); } else showCard();
     selReg = reg; cardBus = reg; cardStop = null;
     paintBus(reg, true); showBusRoute(code); update(); watchPing();
+    showPicked(tr);
     setShare(`bus=${encodeURIComponent(reg)}`, `/b/${encodeURIComponent(reg)}`, `Bus ${reg} on route ${busSn(tr)} — live on the Chennai MTC map`);
+  }
+  /* Opened from a list, a search or a link, a bus could be anywhere, or a speck at city zoom
+     (rider, 17 Nov: "I have to search where the bus is"). If it is not well inside what is
+     visible past the cards, the map moves to it; zoomed far out, in to where the bus reads. */
+  // where the middle of what is visible past the cards is, as a one-off offset: padding on easeTo / flyTo
+  // stays on the map afterwards (MapLibre) and would shift every later move and the Follow centring
+  const padOff = () => { const p = BUSMAP.fitPad(); return [(p.left - p.right) / 2, (p.top - p.bottom) / 2]; };
+  function showPicked(tr) {
+    const p = posOf(tr, now(), [0, 0, 0]), pad = BUSMAP.fitPad(), c = map.getCanvas();
+    const pt = map.project([p[0], p[1]]), w = c.clientWidth, h = c.clientHeight;
+    const inside = pt.x > pad.left + 24 && pt.x < w - pad.right - 24 && pt.y > pad.top + 24 && pt.y < h - pad.bottom - 24;
+    if (inside && map.getZoom() >= 11) return;
+    map.easeTo({ center: [p[0], p[1]], zoom: Math.max(map.getZoom(), 12.5), offset: padOff(), duration: 800, essential: true });
   }
   // trace the bus's own working on the map, the way tapping a route does
   function showBusRoute(code) {
@@ -844,8 +1161,8 @@
     if (!tr) { const bb = $('lv-busbar'); if (bb) bb.innerHTML = '<div class="lv-note">This bus is no longer reporting.</div>'; return; }
     const [, code, , , , fix, fl] = tr.v, sn = busSn(tr), st = stopsOf(code) || [];
     const f = codeFeat(code), dest = f ? f.properties.destinatio : (st.length ? st[st.length - 1][1] : '');
-    $('card-title').innerHTML = `${tagHTML(sn, f && f.properties.category)}<span class="ttl"><span>→ ${dest || ''}</span></span>`;
-    $('card-sub').innerHTML = `<span class="lv-busline">${chips(fl)}Bus <b>${reg}</b> &middot; GPS ${ago(now() - fix)} ago</span>`;
+    $('card-title').innerHTML = `${tagHTML(sn, f && f.properties.category)}<span class="ttl"><span>${fl.includes('n') ? 'Not on a trip' : '→ ' + (dest || '')}</span></span>`;
+    $('card-sub').innerHTML = `<span class="lv-busline">${chips(fl)}Bus <b>${reg}</b> &middot; GPS ${ago(now() - fix)} ago</span><span class="lv-mnext" id="lv-mnext"></span>`;
     let bar = $('lv-busbar');
     if (!bar || first) {
       if (bar) bar.remove();
@@ -863,10 +1180,264 @@
         + `<div class="lv-bars" title="Estimated crowding by hour on this working">${bars.map((x, h) => `<i style="height:${x == null ? 2 : Math.max(2, 100 * x / mx)}%;background:${x == null ? '#e7e2d6' : CROWD_COL[x < 0.75 ? 0 : x < 1.3 ? 1 : 2]};${h === hNow ? 'outline:1.5px solid #1c1c1e;outline-offset:1px' : ''}"></i>`).join('')}</div>`
         + `<div class="lv-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>23</span></div>`;
     }
-    bar.innerHTML = `<button class="lv-report" id="lv-report">${ic('flag', 14)}Report</button><div id="lv-said"></div>${crowdHTML}`;
-    $('lv-report').addEventListener('click', () => report({ reg, route: code, sn, fl, stop: '', stop_name: '', lat: tr.v[2], lon: tr.v[3] }));
+    const lv = lvOf(fl), lvl = cr ? cr.level : 1, stype = stOf(fl);
+    // the stop it is heading for, with MTC's own time for it
+    const t = now(), nx = tr.v[7].find(([, et]) => et > t - 20), ns = nx && st[nx[0]];
+    const wait = fl.includes('u');
+    // the bus itself, in 3D: the hero is built once per bus and kept while the rest of the card refreshes
+    if (!bar._hero || bar._k !== reg + stype) {
+      bar._k = reg + stype;
+      bar.innerHTML = `<div class="lv-hero" id="lv-hero"></div><div id="lv-busfacts"></div><div id="lv-alsoroute"></div>`;
+      bar._hero = true;
+      hero3D($('lv-hero'), stype, BUSISO.portrait(lv, lvl), ST[stype].name);
+    }
+    // its route number and destination on the model's own boards (front, rear, side LED: what it has)
+    const hero = $('lv-hero');
+    if (hero && hero._board !== sn + '|' + dest) { hero._board = sn + '|' + dest; hero._sign = { sn: String(sn), dest: fl.includes('n') ? '' : dest || '' }; signBoards(hero); }
+    const shade = shadeOf(tr);
+    // flag o: MTC's trip progress put the next stop far from the bus's GPS (stuck at the first stop, or another trip's), so the collector dropped its stops and times
+    // a bus waiting away from where its next trip starts (L0016 at the airport, listed from Tambaram West, 18 Nov):
+    // say where it stands now, so the card never claims it is somewhere it visibly is not
+    let at = '';
+    if (wait && ns) {
+      const cx = K * Math.cos(tr.v[2] * Math.PI / 180), dm = s_ => Math.hypot((s_[3] - tr.v[3]) * cx, (s_[2] - tr.v[2]) * K);
+      const away = dm(ns);
+      if (away > 600) {
+        const near = st.reduce((b, s_) => dm(s_) < dm(b) ? s_ : b, st[0]);
+        at = `<dt>Now at</dt><dd>${dm(near) < 400 ? `${near[1]}, ` : ''}${away < 1000 ? Math.round(away / 10) * 10 + ' m' : (away / 1000).toFixed(1) + ' km'} from ${ns[1]}</dd>`;
+      }
+    }
+    $('lv-busfacts').innerHTML = (ns ? `<dl class="bm-facts"><dt>${wait ? 'Starts from' : 'Next stop'}</dt><dd>${ns[1]} · ${inMin(nx[1])} · ${hhmm(nx[1])}</dd>${at}</dl>`
+      : fl.includes('p') ? `<dl class="bm-facts"><dt>Next stop</dt><dd>None for now: it has stood at a depot or terminus for over 5 minutes, away from the stop MTC lists next, so it is not shown arriving anywhere</dd></dl>`
+      : fl.includes('o') ? `<dl class="bm-facts"><dt>Next stop</dt><dd>Not known: MTC's trip data does not match where the bus is</dd></dl>` : '')
+      + (shade && !fl.includes('n') && !wait ? `<div class="lv-shade${shade.side ? '' : ' even'}">${ic('sun', 15)}<span>${shade.text}</span></div>` : '')
+      + `<button class="timings-btn${follow ? ' on' : ''}" id="followbtn">${follow ? 'Following this bus' : 'Follow this bus'}</button>`
+      + `<div class="lv-stophead" style="margin-top:10px"><span></span><button class="lv-report" id="lv-report" style="margin:0">${ic('flag', 14)}Report</button></div><div id="lv-said"></div>${crowdHTML}`;
+    $('lv-report').addEventListener('click', e => { e.stopPropagation(); report({ reg, route: code, sn, fl, stop: '', stop_name: '', lat: tr.v[2], lon: tr.v[3] }); });
+    $('followbtn').addEventListener('click', e => {
+      e.stopPropagation(); follow = !follow; syncFollow();
+      if (follow) { const p = posOf(tr, now(), [0, 0, 0]); map.easeTo({ center: [p[0], p[1]], zoom: Math.max(map.getZoom(), 14) }); if (SPEAK.has(tr)) SPEAK.start(tr); }
+    });
     said({ reg });
     railProgress(first);
+    alsoOnRoute();
+    miniNext(true);
+  }
+
+  /* The bus in the card, in 3D: the archive's model of its type (bus3d/models/, Draco + WebP,
+     200-340 KB), turned by finger or mouse. model-viewer loads only when the first bus card
+     opens; until it and the model arrive (or on Save-Data) the drawn portrait stands in. */
+  let MV = null;
+  const loadMV = () => MV || (MV = new Promise((ok, no) => {
+    if (customElements.get('model-viewer')) return ok();
+    const sc = document.createElement('script'); sc.type = 'module';
+    sc.src = 'https://cdn.jsdelivr.net/npm/@google/model-viewer@3.5.0/dist/model-viewer.min.js';
+    sc.onload = () => customElements.whenDefined('model-viewer').then(ok); sc.onerror = no;
+    document.head.appendChild(sc);
+  }));
+  function hero3D(el, stype, poster, name) {
+    el.innerHTML = `<img alt="${name} bus" src="${poster}">`;
+    if (SAVE) return;
+    loadMV().then(() => {
+      if (!el.isConnected) return;
+      const mv = document.createElement('model-viewer');
+      const at = { src: `bus3d/models/${ST[stype].m}.glb?v=${BUS3D_V}`, alt: `${name} bus, in 3D: drag to turn it`, 'camera-controls': '',
+        'touch-action': 'pan-y', 'interaction-prompt': 'none', 'disable-pan': '', 'auto-rotate': '', 'auto-rotate-delay': '0',
+        'rotation-per-second': '14deg', 'camera-orbit': '142deg 74deg 78%', 'min-camera-orbit': 'auto 20deg 55%', 'max-camera-orbit': 'auto 92deg 160%',
+        'shadow-intensity': '0.9', 'shadow-softness': '0.8', exposure: '1.05', 'environment-image': 'neutral', loading: 'eager' };
+      for (const k in at) mv.setAttribute(k, at[k]);
+      mv.className = 'lv-mv';
+      mv.addEventListener('load', () => { const im = el.querySelector('img'); if (im) im.remove(); mv.classList.add('in'); signBoards(el); }, { once: true });
+      el.appendChild(mv);
+    }).catch(() => {});
+  }
+
+  /* The destination boards on the 3D bus show the bus's own route and where it is going. The
+     archive's models carry each board as its own material: <model>_board (front), _boardin (its
+     inside face), _sideled (side LED panel), any rear or back board too. Each one the model has
+     gets a canvas: an amber dot-matrix LED board, or black on white for a painted board (the
+     pink Vidiyal bus). The texture goes on base colour and emission, as the archive lights them. */
+  const PLAIN_BOARD = new Set(['pink-vidiyal-2022']);
+  function boardCanvas(text, aspect, led) {
+    const H = 256, W = Math.round(H * aspect), cv = document.createElement('canvas');
+    cv.width = W; cv.height = H;
+    const g = cv.getContext('2d');
+    const font = px => `800 ${px}px "Helvetica Neue", Arial, "Noto Sans Tamil", sans-serif`;
+    if (!led) {
+      g.fillStyle = '#f4f4ef'; g.fillRect(0, 0, W, H);
+      let px = 150; g.font = font(px);
+      while (px > 60 && g.measureText(text).width > W * 0.92) { px -= 6; g.font = font(px); }
+      g.fillStyle = '#151515'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, W / 2, H / 2 + 6, W * 0.94);
+      return cv;
+    }
+    // the text drawn small, one pixel a LED, then each LED drawn as a dot: lit amber or dark
+    const rows = 18, cell = H / rows, cols = Math.floor(W / cell);
+    const sm = document.createElement('canvas'); sm.width = cols; sm.height = rows;
+    const s2 = sm.getContext('2d');
+    let px = 15; s2.font = font(px);
+    while (px > 9 && s2.measureText(text).width > cols - 4) { px--; s2.font = font(px); }
+    s2.fillStyle = '#fff'; s2.textAlign = 'center'; s2.textBaseline = 'middle';
+    s2.fillText(text, cols / 2, rows / 2 + 1, cols - 3);
+    const a = s2.getImageData(0, 0, cols, rows).data;
+    g.fillStyle = '#0d0a06'; g.fillRect(0, 0, W, H);
+    const x0 = (W - cols * cell) / 2;
+    for (let y = 0; y < rows; y++) for (let x = 0; x < cols; x++) {
+      const lit = a[(y * cols + x) * 4 + 3] > 110;
+      g.fillStyle = lit ? '#ffb21a' : '#2b2010';
+      g.beginPath(); g.arc(x0 + (x + 0.5) * cell, (y + 0.5) * cell, cell * (lit ? 0.42 : 0.3), 0, 6.2832); g.fill();
+    }
+    return cv;
+  }
+  async function signBoards(el) {
+    const mv = el && el.querySelector('model-viewer'), sg = el && el._sign;
+    if (!mv || !sg || !mv.model) return;
+    const src = mv.getAttribute('src') || '', m = (src.match(/models\/([^.?]+)\.glb/) || [])[1] || '';
+    const dest = String(sg.dest || '').toUpperCase().replace(/\s+/g, ' ').trim();
+    for (const mat of mv.model.materials) {
+      const nm = (mat.name || '').toLowerCase();
+      const side = /_sideled$/.test(nm), board = /_board(in)?$/.test(nm) || (/(rear|back)/.test(nm) && /(board|led)/.test(nm));
+      if (!side && !board) continue;
+      const led = side || !PLAIN_BOARD.has(m);
+      // the side panel is shorter: the number and the destination, or the number alone if that is all that fits
+      const text = (sg.sn + (dest ? '  ' + dest : '')).trim();
+      try {
+        const tex = await mv.createTexture(boardCanvas(text, side ? 5.45 : 8.3, led).toDataURL('image/png'));
+        const bc = mat.pbrMetallicRoughness && mat.pbrMetallicRoughness.baseColorTexture;
+        if (bc) bc.setTexture(tex);
+        if (mat.emissiveTexture) mat.emissiveTexture.setTexture(tex);
+      } catch (e) {}
+    }
+  }
+
+  /* Spoken stops while following a bus: when it leaves a stop, "next stop" in Tamil and then in
+     English, both in Sarvam bulbul's Gokul voice from MTC's own Tamil stop names (the English one
+     reads the place name in Tamil, so it is not anglicised). Recorded once per station for every
+     route (audio/stops.json; tools v36/tts_stops.py, v36/tts_stops_en.py), so nothing is
+     synthesised on the phone. A map stop is matched to MTC's
+     station by place (within 150 m). The first clip plays inside the tap on Follow, which is
+     what lets phones play the rest. */
+  const VOICE_URL = 'audio/stops.json?v=3';   // every station, every route
+  const SPEAK = (() => {
+    const el = new Audio(); el.preload = 'auto';
+    let man = {}, q = [], last = null, reg = null, on = false;
+    const load = sn => man[sn] instanceof Promise ? man[sn] : Promise.resolve(man[sn] !== undefined ? man[sn]
+      : (man[sn] = fetch(VOICE_URL).then(r => r.ok ? r.json() : null).catch(() => null).then(j => (man[sn] = j))));
+    const play = () => { if (!q.length || !el.paused && !el.ended) return; el.src = q.shift(); el.play().catch(() => {}); };
+    el.addEventListener('ended', () => setTimeout(play, 250));
+    function sid(M, code, i) {
+      const s_ = (stopsOf(code) || [])[i]; if (!s_ || !M) return null;
+      const key = code + ':' + i; M._m = M._m || {};
+      if (key in M._m) return M._m[key];
+      let best = null, bd = 150;
+      const cx = Math.cos(s_[2] * Math.PI / 180) * K;
+      for (const [id, x] of Object.entries(M.stops)) {
+        const d = Math.hypot((x.lon - s_[3]) * cx, (x.lat - s_[2]) * K);
+        if (d < bd) { bd = d; best = id; }
+      }
+      if (!best) {                    // same stop, placed apart: the same first word of its name within 1.5 km
+        const w = String(s_[1]).toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean)[0];
+        bd = 1500;
+        for (const [id, x] of Object.entries(M.stops)) {
+          if (String(x.en).toUpperCase().split(/[^A-Z0-9]+/).filter(Boolean)[0] !== w) continue;
+          const d = Math.hypot((x.lon - s_[3]) * cx, (x.lat - s_[2]) * K);
+          if (d < bd) { bd = d; best = id; }
+        }
+      }
+      return (M._m[key] = best);
+    }
+    function say(M, code, i) {
+      const id = sid(M, code, i); if (!id) return;
+      q = [`audio/ta/${id}.mp3?v=${M.stops[id].ta_ms || ''}`].concat(M.stops[id].en_ms ? [`audio/en/${id}.mp3?v=${M.stops[id].en_ms}`] : []); el.pause(); play();
+    }
+    return {
+      has: tr => !!tr,
+      start(tr) {                     // in the tap: unlock audio, say the stop it is heading for
+        on = true; reg = tr.v[0]; last = null;
+        el.src = 'audio/silence.mp3';
+        el.play().catch(() => {});
+        load(String(busSn(tr)).toUpperCase()).then(M => { if (on && M) this.tick(TRACK.get(reg), now(), true); });
+      },
+      stop() { on = false; reg = null; q = []; el.pause(); },
+      tick(tr, t, force) {
+        if (!on || !tr || tr.v[0] !== reg) return;
+        const sn = String(busSn(tr)).toUpperCase(), M = man[sn];
+        if (!M || M instanceof Promise) return;
+        const nx = (tr.v[7] || []).find(([, et]) => et > t - 20);
+        if (!nx) return;
+        const k = tr.v[1] + ':' + nx[0];
+        if (k === last && !force) return;
+        last = k; say(M, tr.v[1], nx[0]);
+      },
+    };
+  })();
+
+  function syncFollow() {
+    if (!follow) SPEAK.stop(); const f = $('followbtn'); if (f) { f.classList.toggle('on', follow); f.textContent = follow ? 'Following this bus' : 'Follow this bus'; } }
+
+  /* The buses running the open route right now, as on the APSRTC/TGSRTC route cards:
+     each with the way it is heading (MTC runs both directions under one number),
+     or waiting for its next trip. Tap one to open it. */
+  function liveOnRoute(also) {
+    const box = $(also ? 'lv-alsoroute' : 'lv-onroute');
+    const sn0 = also ? (TRACK.get(cardBus) ? snOf(TRACK.get(cardBus).v[1]) : null) : focusSn;
+    if (!box || !sn0 || (!also && cardBus)) return;
+    if (!on || !FEED) { box.innerHTML = ''; return; }
+    const t = now(), cut = s => s && s.length > 20 ? s.slice(0, 19) + '…' : s || '';
+    const bs = [...TRACK.entries()].filter(([reg, tr]) => snOf(tr.v[1]) === sn0 && passes(tr.v[6]) && !(also && reg === cardBus))
+      .sort((a, b) => (a[1].v[6].includes('u') - b[1].v[6].includes('u')) || b[1].v[5] - a[1].v[5]);
+    if (also && !bs.length) { box.innerHTML = ''; box._html = ''; return; }
+    const html = `<div class="seclbl">${also ? 'Also on this route' : 'Live on this route'} <b>${bs.length}</b></div>` + (bs.length
+      ? `<div class="lv-onr">${bs.slice(0, 40).map(([reg, tr]) => {
+          const fl = tr.v[6], L_ = { name: ST[stOf(fl)].name, key: ST[stOf(fl)].col }, f = codeFeat(tr.v[1]), st = stopsOf(tr.v[1]) || [];
+          const dest = f ? f.properties.destinatio : st.length ? st[st.length - 1][1] : '';
+          return `<button class="lv-onb" data-bus="${reg}" title="${L_.name || ''}${dest ? ' · to ' + dest : ''}"><i style="background:${L_.key || '#888'}">${ic('bus', 11)}</i>`
+            + `<span><b>${reg}</b><small>${fl.includes('n') ? 'no trip assigned' : fl.includes('p') ? 'in depot' : fl.includes('u') ? 'waiting for next trip' : '→ ' + cut(dest)} · ${ago(t - tr.v[5])}</small></span></button>`; }).join('')}</div>`
+      : `<div class="lv-note">No bus is on this route right now.</div>`);
+    if (box._html === html) return;
+    box._html = html; box.innerHTML = html;
+    box.querySelectorAll('[data-bus]').forEach(el => el.addEventListener('click', e => {
+      e.stopPropagation();
+      const tr = TRACK.get(el.dataset.bus); if (!tr) return;
+      openBus(el.dataset.bus);
+      const p = posOf(tr, now(), [0, 0, 0]); map.flyTo({ center: [p[0], p[1]], zoom: Math.max(map.getZoom(), 14), offset: padOff(), duration: 700 });
+    }));
+  }
+
+  const alsoOnRoute = () => liveOnRoute(true);
+
+  /* The folded card (tap its header): the stop the bus is heading for stays on its last line,
+     blinking slowly as the bus closes in (within 1 km or 4 min), fast when it is nearly there
+     (250 m or a minute), and steady once it stands at the stop. A long name scrolls. */
+  let miniT = null;
+  function miniNext(first) {
+    const card = $('card'), el = $('lv-mnext');
+    const tr = cardBus && TRACK.get(cardBus);
+    if (!card || !el || !tr) { if (card) card.classList.remove('lv-hasnext'); return; }
+    const t = now(), fl = tr.v[6], code = tr.v[1], st = stopsOf(code) || [];
+    const nx = (tr.v[7] || []).find(([, et]) => et > t - 20), ns = nx && st[nx[0]];
+    let txt = '', cls = '';
+    if (ns && !fl.includes('p') && !fl.includes('n')) {
+      const p = posOf(tr, t, [0, 0, 0]), cx = K * Math.cos(p[1] * Math.PI / 180);
+      const dist = s_ => Math.hypot((s_[3] - p[0]) * cx, (s_[2] - p[1]) * K);
+      const prev = nx[0] > 0 && st[nx[0] - 1], d = dist(ns), sec = nx[1] - t;
+      if (fl.includes('u')) { txt = `Starts from <b>${ns[1]}</b> · ${hhmm(nx[1])}`; cls = 'wait'; }
+      else if (d < 45) { txt = `At <b>${ns[1]}</b>`; cls = 'at'; }
+      else if (prev && dist(prev) < 45 && sec > 60) { txt = `At <b>${prev[1]}</b>`; cls = 'at'; }
+      else {
+        cls = d < 250 || sec < 60 ? 'near' : d < 1000 || sec < 240 ? 'appr' : '';
+        txt = `Next <b>${ns[1]}</b> · ${cls === 'near' ? 'arriving' : inMin(nx[1])}`;
+      }
+    }
+    card.classList.toggle('lv-hasnext', !!txt);
+    el.className = 'lv-mnext' + (cls ? ' ' + cls : '');
+    if (el._t !== txt) {
+      el._t = txt;
+      el.innerHTML = txt ? `<i></i><span class="lv-mtrack"><span class="lv-mtxt">${txt}</span></span>` : '';
+      const tk = el.querySelector('.lv-mtrack'), tx = el.querySelector('.lv-mtxt');
+      // a long name scrolls: measured once it is laid out (the folded card may still be animating)
+      if (tk) requestAnimationFrame(() => { const over = tx.scrollWidth - tk.clientWidth; tx.classList.toggle('scroll', over > 4); tx.style.setProperty('--dx', -over - 8 + 'px'); tx.style.setProperty('--dur', Math.max(5, over / 22 + 3) + 's'); });
+    }
+    if (first) { clearInterval(miniT); miniT = setInterval(() => { if (!cardBus) { clearInterval(miniT); miniT = null; } miniNext(); }, 1000); }
   }
 
   /* The bus's progress on the stop diagram: stops behind it filled, the stop it
@@ -907,7 +1478,8 @@
 
   // which route-stop entries sit at this physical stop (stops are merged by location on the map)
   let STOP_GRID = null;
-  function stopKeys(lon, lat) {
+  // ids: a per-side pin's stop ids - only that side's stops (its position may be MTC's, up to 80 m from ours)
+  function stopKeys(lon, lat, ids) {
     if (!ROUTE_STOPS) return [];
     if (!STOP_GRID) {
       STOP_GRID = new Map();
@@ -916,14 +1488,14 @@
         s.forEach((x, i) => {
           const k = `${Math.round(x[2] * 500)},${Math.round(x[3] * 500)}`;
           if (!STOP_GRID.has(k)) STOP_GRID.set(k, []);
-          STOP_GRID.get(k).push([code, i, x[2], x[3]]);
+          STOP_GRID.get(k).push([code, i, x[2], x[3], x[0]]);
         });
       }
     }
     const out = [], gy = Math.round(lat * 500), gx = Math.round(lon * 500);
     for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++)
       for (const e of STOP_GRID.get(`${gy + dy},${gx + dx}`) || [])
-        if (Math.hypot((e[3] - lon) * K * Math.cos(lat * Math.PI / 180), (e[2] - lat) * K) < 70) out.push(e);
+        if ((!ids || ids.has(e[4])) && Math.hypot((e[3] - lon) * K * Math.cos(lat * Math.PI / 180), (e[2] - lat) * K) < (ids ? 150 : 70)) out.push(e);
     return out;
   }
   function paintStopArrivals() {
@@ -934,7 +1506,7 @@
       return;
     }
     if (!FEED || ROUTE_STOPS === undefined) { box.innerHTML = `<div class="seclbl">Live arrivals</div><div class="lv-note">Loading live buses…</div>`; ensureStops().then(paintStopArrivals); return; }
-    const keys = stopKeys(cardStop[0], cardStop[1]);
+    const keys = stopKeys(cardStop[0], cardStop[1], cardIds);
     const want = new Map(); keys.forEach(([code, i]) => { if (!want.has(code)) want.set(code, new Set()); want.get(code).add(i); });
     const t = now(), arr = [];
     for (const [reg, tr] of TRACK) {
@@ -952,12 +1524,12 @@
     }).join('');
     box.innerHTML = `<div class="seclbl">Live arrivals · next 90 min</div>`
       + (rows || `<div class="lv-note">No tracked bus is due here in the next 90 minutes. Not every bus reports its position.</div>`)
-      + (hidden ? `<div class="lv-note">${hidden} more bus${hidden === 1 ? '' : 'es'} hidden by the filters in the top bar.</div>` : '')
-      + (rows ? `<div class="lv-note">Estimated from each bus's GPS (MTC app feed) and its distance to the stop. Tap a bus to follow it.</div>` : '');
+      + (hidden ? `<div class="lv-note">${hidden} more bus${hidden === 1 ? '' : 'es'} hidden by the filters at the bottom.</div>` : '')
+      + (rows ? `<div class="lv-note">Arrival times are MTC's own, from its bus tracking. Tap a bus to follow it.</div>` : '');
     box.querySelectorAll('[data-reg]').forEach(el => el.addEventListener('click', () => {
       const tr = TRACK.get(el.dataset.reg); if (!tr) return;
       openBus(el.dataset.reg);
-      const p = posOf(tr, now(), [0, 0, 0]); map.flyTo({ center: [p[0], p[1]], zoom: Math.max(map.getZoom(), 14), duration: 700 });
+      const p = posOf(tr, now(), [0, 0, 0]); map.flyTo({ center: [p[0], p[1]], zoom: Math.max(map.getZoom(), 14), offset: padOff(), duration: 700 });
     }));
   }
 
@@ -967,6 +1539,7 @@
     baseOpenStop(f);
     cardBus = null; selReg = null; focusSn = null;
     cardStop = f.geometry.coordinates;
+    cardIds = f.properties && f.properties.ids ? new Set(String(f.properties.ids).split(',')) : null;
     if (opts.fly) map.flyTo({ center: cardStop, zoom: Math.max(map.getZoom(), 16), duration: 1100, essential: true });
     const head = document.createElement('div');
     head.className = 'lv-stophead';
@@ -978,12 +1551,20 @@
     if (opts.fromBus) $('lv-back').addEventListener('click', () => swapCard(() => {
       const tr = TRACK.get(opts.fromBus); if (!tr) return;
       openBus(opts.fromBus);
-      const p = posOf(tr, now(), [0, 0, 0]); map.flyTo({ center: [p[0], p[1]], zoom: Math.max(map.getZoom(), 15), duration: 900 });
+      const p = posOf(tr, now(), [0, 0, 0]); map.flyTo({ center: [p[0], p[1]], zoom: Math.max(map.getZoom(), 15), offset: padOff(), duration: 900 });
     }));
-    const keys = stopKeys(cardStop[0], cardStop[1]);
+    const keys = stopKeys(cardStop[0], cardStop[1], cardIds);
     const stopCode = keys.length ? stopsOf(keys[0][0])[keys[0][1]][0] : '';
     const stopName = f.properties['Stop Name'] || '';
     $('lv-report-stop').addEventListener('click', () => report({ stop: stopCode, stop_name: stopName, lat: cardStop[1], lon: cardStop[0], atStop: true }));
+    // how long buses stand here, measured from their GPS (travel_model.py -> live/dwell.json)
+    const sid = f.properties.stop_id || stopCode;
+    dwellOf(sid).then(d => {
+      if (!d || !document.body.contains(head)) return;
+      const n = document.createElement('div'); n.className = 'lv-note'; n.style.margin = '0 0 8px';
+      n.textContent = `Buses stand here about ${d < 90 ? d + ' s' : Math.round(d / 60) + ' min'} when they stop · measured from their GPS`;
+      head.after(n);
+    });
     if (stopCode) said({ stop: stopCode });
     paintStopArrivals();
     const key = `${cardStop[1].toFixed(5)},${cardStop[0].toFixed(5)}`;
@@ -1091,6 +1672,7 @@
   const NAMES = {};
   for (const [k, g] of Object.entries(SAY)) for (const [v, [, l, more]] of Object.entries(g.opts)) { NAMES[k + ':' + v] = l; for (const [d, dl] of Object.entries(more || {})) NAMES[`${k}:${v}:${d}`] = dl; }
   function said(q, fresh) {
+    if (!REPORTS) return;
     const box = $('lv-said'); if (!box) return;
     const qs = q.reg ? `reg=${encodeURIComponent(q.reg)}` : `stop=${encodeURIComponent(q.stop)}`;
     fetch(`api/recent?${qs}&t=${fresh ? Date.now() : Math.floor(Date.now() / 60000)}`).then(r => r.ok ? r.json() : null).then(j => {
@@ -1100,15 +1682,17 @@
         `<div class="lv-said">${ic(SAY[k].opts[v][0], 14)}<b>${NAMES[k + ':' + v]}</b>${d ? ` · ${NAMES[`${k}:${v}:${d}`]}` : ''}${sn && !q.reg ? ` · ${sn}` : ''}<span>${m < 1 ? 'just now' : m + ' min ago'}</span></div>`).join('');
     }).catch(() => {});
   }
-  $('card-close').addEventListener('click', () => { cardStop = cardBus = selReg = focusSn = null; update(); setShare('', '', ''); });
+  $('card-close').addEventListener('click', () => { cardStop = cardBus = selReg = focusSn = null; follow = false; update(); setShare('', '', ''); });
   const baseClear = clearSelection;
   clearSelection = function (...a) { focusSn = null; update(); return baseClear.apply(this, a); };
   const baseSelect = selectRoute;
   selectRoute = function (...a) {
-    cardStop = cardBus = selReg = null;
+    cardStop = cardBus = selReg = null; follow = false;
     focusSn = a[0] || null;
     setTimeout(watchPing, 0);
     const out = baseSelect.apply(this, a);
+    if ($('card-body') && !a[1]) $('card-body').scrollTop = 0;   // a new route opens at its top, not where the last card was scrolled
+    if ($('card-body') && !$('lv-onroute')) { $('card-body').insertAdjacentHTML('afterbegin', '<div id="lv-onroute"></div>'); liveOnRoute(); }
     const sn = a[0], e = ROUTE_IDX[sn], w = a[1] || (e && e.code) || '';
     if (sn) setShare(`route=${encodeURIComponent(sn)}${w ? `&w=${w}` : ''}`, `/r/${encodeURIComponent(sn)}${w ? `?w=${w}` : ''}`, `Route ${sn}${e && e.source ? ` · ${e.source} → ${e.dest}` : ''} — Chennai MTC map`);
     return out;
@@ -1144,7 +1728,7 @@
     box.querySelectorAll('[data-bus]').forEach(el => el.addEventListener('click', () => {
       const tr = TRACK.get(el.dataset.bus); if (!tr) return;
       openBus(el.dataset.bus);
-      const p = posOf(tr, now(), [0, 0, 0]); map.flyTo({ center: [p[0], p[1]], zoom: Math.max(map.getZoom(), 15), duration: 900 });
+      const p = posOf(tr, now(), [0, 0, 0]); map.flyTo({ center: [p[0], p[1]], zoom: Math.max(map.getZoom(), 15), offset: padOff(), duration: 900 });
     }));
   });
 
@@ -1167,7 +1751,7 @@
       until(() => FEED && dataReady && Object.keys(ROUTE_IDX).length && (TRACK.has(bus) || Date.now() - fetchT0 > 30000), () => {
         if (!TRACK.has(bus)) { toast('That bus is not reporting its position right now'); return; }
         openBus(bus);
-        const p = posOf(TRACK.get(bus), now(), [0, 0, 0]); map.flyTo({ center: [p[0], p[1]], zoom: 15, duration: 1200 });
+        const p = posOf(TRACK.get(bus), now(), [0, 0, 0]); map.flyTo({ center: [p[0], p[1]], zoom: 15, offset: padOff(), duration: 1200 });
       }, 60000);
     }
   })();

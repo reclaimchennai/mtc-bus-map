@@ -43,6 +43,11 @@
       #traffic-card .seg { margin: 0 0 6px; }
       #traffic-card .city { margin-top: 5px; padding-top: 5px; }
       body.card-open #traffic-card { display: none; } }
+    body.bm-dark #traffic-card { background: rgba(30,32,38,.94); box-shadow: 0 6px 22px rgba(0,0,0,.5); }
+    body.bm-dark #traffic-card .seg { background: #2a2d34; }
+    body.bm-dark #traffic-card .seg button.on { background: #3a3e47; box-shadow: 0 1px 3px rgba(0,0,0,.4); }
+    body.bm-dark .tr-pop .maplibregl-popup-content { background: #1d2025; color: var(--ink); }
+    body.bm-dark .tr-pop .maplibregl-popup-tip { border-top-color: #1d2025; border-bottom-color: #1d2025; }
     .tr-pop .maplibregl-popup-content { border-radius: 12px; padding: 9px 12px; font-size: 12.5px; box-shadow: 0 6px 20px rgba(0,0,0,.18); }
     .tr-pop b { font-size: 15px; font-variant-numeric: tabular-nums; }
   `;

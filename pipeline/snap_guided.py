@@ -137,7 +137,11 @@ def main():
     ap.add_argument('--workers', type=int, default=3)
     ap.add_argument('--codes', default='')
     ap.add_argument('--osrm', default='https://router.project-osrm.org')
+    ap.add_argument('--waypoints', help='JSON {code: [[lat, lon], ...]}: the operator path to use instead of the '
+                    "harvest's (e.g. MTC's own RoutePoints from mtcits_routepaths.py); a result must then also stay "
+                    'closer to that path than the plain route does')
     a = ap.parse_args()
+    ext = json.load(open(a.waypoints)) if a.waypoints else None
     os.makedirs(a.dst, exist_ok=True)
     routes = sr.load_routes()
     if a.codes:
@@ -152,16 +156,24 @@ def main():
         if os.path.exists(out):
             return
         plain = json.load(open(os.path.join(a.src, code + '.json')))
-        try:
-            wps = json.load(open(os.path.join(sr.HARVEST, f'BUS_{code}.json'))).get('waypoints') or []
-        except Exception:
-            wps = []
+        if ext is not None:
+            wps = [{'lat': y, 'lon': x} for y, x in ext.get(code) or []]
+        else:
+            try:
+                wps = json.load(open(os.path.join(sr.HARVEST, f'BUS_{code}.json'))).get('waypoints') or []
+            except Exception:
+                wps = []
         pts, nguided = plan(r['stops'], wps)
         res = None
         if nguided or any('_bearing' in p for p in pts):
             res = route(a.osrm, pts)
-        if res and len(res['legs']) == len(r['stops']) - 1 and length(res['coords']) <= length(plain['coords']) * 1.02:
-            res.update(ok=True, seq=plain.get('seq'), guided_legs=nguided)
+        closer = True
+        if res and ext is not None and len(wps) > 2:      # must also follow the operator's path more closely
+            W = transform(TO_M, LineString([(p['lon'], p['lat']) for p in wps])).buffer(LEG_OFF_M)
+            off = lambda cs: transform(TO_M, LineString(cs)).difference(W).length if len(cs) > 1 else 0
+            closer = off(res['coords']) < off(plain['coords']) - 50
+        if res and closer and len(res['legs']) == len(r['stops']) - 1 and length(res['coords']) <= length(plain['coords']) * 1.02:
+            res.update(ok=True, seq=plain.get('seq'), guided_legs=nguided, **({'guide': 'mtc'} if ext is not None else {}))
             stats['guided'] += 1; stats['saved_m'] += length(plain['coords']) - length(res['coords'])
             json.dump(res, open(out, 'w'), separators=(',', ':'))
         else:
